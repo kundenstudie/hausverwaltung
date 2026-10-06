@@ -198,6 +198,91 @@ const spec = {
         responses: { "201": { description: "Created" }, "400": { description: "Bad request" } },
       },
     },
+    "/api/v1/leases/{id}": {
+      get: {
+        tags: ["Verträge"],
+        summary: "Lease Legal-Kontext (read-only, mandanten-gescoped)",
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": {
+            description: "OK",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["leaseId", "startDate", "endDate", "rentCold", "noticePeriodMonths"],
+                  properties: {
+                    leaseId: { type: "string" },
+                    startDate: { type: "string", format: "date" },
+                    endDate: { type: ["string", "null"], format: "date" },
+                    rentCold: { type: "number" },
+                    noticePeriodMonths: { type: ["integer", "null"] },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Unauthorized" },
+          "404": { description: "Not found" },
+        },
+      },
+    },
+    "/api/v1/leases/{id}/rent-adjustments": {
+      get: {
+        tags: ["Verträge"],
+        summary: "Mietanpassungs-Historie (read-only, mandanten-gescoped)",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string" } },
+          { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["items", "pagination"],
+                  properties: {
+                    items: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        additionalProperties: false,
+                        required: ["id", "leaseId", "type", "effectiveDate", "newRentCold", "indexBase", "indexNew", "applied"],
+                        properties: {
+                          id: { type: "string" },
+                          leaseId: { type: "string" },
+                          type: { type: "string", enum: ["STAFFEL", "INDEX"] },
+                          effectiveDate: { type: "string", format: "date" },
+                          newRentCold: { type: "number" },
+                          indexBase: { type: ["number", "null"] },
+                          indexNew: { type: ["number", "null"] },
+                          applied: { type: "boolean" },
+                        },
+                      },
+                    },
+                    pagination: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["count", "limit"],
+                      properties: { count: { type: "integer" }, limit: { type: "integer" } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Bad request" },
+          "401": { description: "Unauthorized" },
+          "404": { description: "Not found" },
+        },
+      },
+    },
   },
 };
 

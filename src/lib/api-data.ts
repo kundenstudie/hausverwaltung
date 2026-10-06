@@ -1,4 +1,10 @@
 import { prisma } from "@/lib/prisma";
+import {
+  toLeaseLegalContextDto,
+  toRentAdjustmentListDto,
+  type LeaseLegalContextRow,
+  type RentAdjustmentRow,
+} from "@/lib/api-legal-dto";
 
 // Geteilte, mandanten-gescopte Datenschicht für REST-API und MCP-Server.
 // Alle Funktionen erhalten die tenantId aus dem authentifizierten Token.
@@ -475,4 +481,40 @@ export async function portfolioSummary(tenantId: string) {
     openItemsTotal: Math.round(totalOpen * 100) / 100,
     openTickets,
   };
+}
+
+// --- PropertyAI (Stufe 3, D-0038): mandanten-gescopte Legal-Read-Funktionen ---
+// Explizites select: es werden ausschließlich die DTO-Felder geladen. Insbesondere
+// werden Lease.custom und RentAdjustment.note NIE selektiert (kein PII-Leak).
+
+export async function getLeaseLegalContext(tenantId: string, id: string) {
+  const row = await prisma.lease.findFirst({
+    where: { id, tenantId },
+    select: { id: true, startDate: true, endDate: true, rentCold: true, noticePeriodM: true },
+  });
+  if (!row) return null;
+  return toLeaseLegalContextDto(row as LeaseLegalContextRow);
+}
+
+export async function listLeaseRentAdjustments(tenantId: string, leaseId: string, limit: number) {
+  // Erst den Lease strikt tenant-gescoped prüfen: fremder/unbekannter Lease -> null -> 404.
+  const lease = await prisma.lease.findFirst({ where: { id: leaseId, tenantId }, select: { id: true } });
+  if (!lease) return null;
+  // Defense in depth: zusätzlich tenantId auf den Anpassungen filtern.
+  const rows = await prisma.rentAdjustment.findMany({
+    where: { leaseId, tenantId },
+    orderBy: [{ effectiveDate: "desc" }, { id: "asc" }],
+    take: limit,
+    select: {
+      id: true,
+      leaseId: true,
+      type: true,
+      effectiveDate: true,
+      newRentCold: true,
+      indexBase: true,
+      indexNew: true,
+      applied: true,
+    },
+  });
+  return toRentAdjustmentListDto(rows as RentAdjustmentRow[], limit);
 }
