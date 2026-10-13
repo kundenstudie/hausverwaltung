@@ -2,6 +2,7 @@ import { authenticateBearer, type ApiPrincipal } from "@/lib/api-auth";
 import * as data from "@/lib/api-data";
 import { apiCreate, apiUpdate, apiDelete, listEntities, ENTITIES } from "@/lib/api-write";
 import { runOperation, listOperations, OPERATION_NAMES } from "@/lib/api-ops";
+import { gateMcpTool } from "@/lib/mcp-approval";
 
 // MCP-Server (Model Context Protocol) über Streamable HTTP / JSON-RPC.
 // Auth: Bearer-Token (persönlicher API-Token). Der Agent (Claude, ChatGPT,
@@ -289,7 +290,35 @@ export async function POST(req: Request) {
       const tool = TOOLS.find((t) => t.name === params?.name);
       if (!tool) return rpcError(id, -32602, `Unbekanntes Tool: ${params?.name}`);
       try {
-        const result = await tool.run(principal, params?.arguments ?? {});
+        const args = (params?.arguments ?? {}) as Record<string, unknown>;
+        // Sicherheits-Boundary: Role Authorization + Risk Classification + Approval.
+        const gate = await gateMcpTool(principal, tool.name, args);
+        if (gate.kind === "forbidden") {
+          return rpc(id, {
+            content: [{ type: "text", text: `Fehler: ${gate.message}` }],
+            isError: true,
+          });
+        }
+        if (gate.kind === "approval_required") {
+          return rpc(id, {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    status: "APPROVAL_REQUIRED",
+                    approvalId: gate.approvalId,
+                    tool: gate.tool,
+                    summary: gate.summary,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          });
+        }
+        const result = await tool.run(principal, args);
         return rpc(id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] });
       } catch (e) {
         return rpc(id, {

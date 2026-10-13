@@ -122,6 +122,8 @@
     "editUser": "Editar usuário",
     "dateFormat": "Formato de data",
     "dateFormatHint": "Formato de exibição das datas, independente do idioma da interface.",
+    "timeZone": "Fuso horário",
+    "timeZoneHint": "Fuso horário para exibição de data/hora e limites de dia local (prazos/compromissos).",
     "dateFormatOptions": {
       "auto": "Automático (idioma da interface)",
       "de": "31.12.2026 (DD.MM.AAAA)",
@@ -250,6 +252,13 @@
     "revoked": "revogado",
     "delete": "Excluir",
     "lastUsed": "último uso"
+  },
+  "mcpApproval": {
+    "title": "Aprovações de ações MCP",
+    "hint": "Agentes de IA externos solicitaram ações materiais. Elas só são executadas após aprovação.",
+    "approve": "Aprovar",
+    "reject": "Rejeitar",
+    "done": "Aprovação atualizada"
   },
   "login": {
     "title": "Entrar",

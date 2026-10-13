@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import { getTranslations, getLocale } from "next-intl/server";
 import { getDateLocale } from "@/lib/date-locale";
-import { requireUser, assignableRoles, canDeleteUser } from "@/lib/rbac";
+import { requireUser, assignableRoles, canDeleteUser, roleAllows, WRITE_ROLES } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,8 +19,10 @@ import { BrandingConfig } from "@/components/branding-config";
 import { CustomFieldDialog } from "@/components/custom-field-dialog";
 import { ApiTokensManager } from "@/components/api-tokens-manager";
 import { IntegrationInfo } from "@/components/integration-info";
+import { McpApprovals, type McpApprovalRow } from "@/components/mcp-approvals";
 import { TenantNameForm } from "@/components/tenant-name-form";
 import { DateFormatConfig } from "@/components/date-format-config";
+import { TimezoneConfig } from "@/components/timezone-config";
 import { StatementDefaults } from "@/components/statement-defaults";
 import { SettingsTabs, type SettingsTab } from "@/components/settings-tabs";
 import { DeleteButton } from "@/components/delete-button";
@@ -61,6 +63,23 @@ export default async function SettingsPage() {
   }));
   const tokenUserOpts = users.map((u) => ({ value: u.id, label: `${u.name} (${u.email})` }));
 
+  // MCP-Freigaben: nur schreibberechtigte Benutzer (ADMIN/VERWALTER/BUCHHALTUNG)
+  // sehen und bearbeiten anstehende Freigaben für externe Agent-Aktionen.
+  const canApprove = roleAllows(user.role, WRITE_ROLES);
+  const pendingApprovals = canApprove
+    ? await prisma.mcpApproval.findMany({
+        where: { tenantId: user.tenantId, status: "PENDING" },
+        orderBy: { requestedAt: "desc" },
+      })
+    : [];
+  const approvalRows: McpApprovalRow[] = pendingApprovals.map((a) => ({
+    id: a.id,
+    tool: a.tool,
+    summary: a.summary,
+    requesterName: a.requesterName,
+    requestedAt: a.requestedAt.toISOString().slice(0, 16).replace("T", " "),
+  }));
+
   const h = await headers();
   const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
   const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
@@ -70,6 +89,7 @@ export default async function SettingsPage() {
     <>
       <TenantNameForm name={tenant?.name ?? ""} address={tenant?.address ?? ""} editable={isAdmin} />
       {isAdmin && <DateFormatConfig dateFormat={tenant?.dateFormat ?? null} />}
+      {isAdmin && tenant && <TimezoneConfig timeZone={tenant.timeZone} />}
       {isAdmin && tenant && <BrandingConfig brandColor={tenant.brandColor} hasLogo={!!tenant.logoKey} />}
     </>
   );
@@ -185,7 +205,7 @@ export default async function SettingsPage() {
           autoSync: tenant.imapAutoSync, intervalMin: tenant.imapSyncIntervalMin,
           attachments: tenant.imapAttachments, attachMaxMb: tenant.imapAttachMaxMb,
           lastSyncAt: tenant.lastInboundSyncAt
-            ? new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Berlin" }).format(tenant.lastInboundSyncAt)
+            ? new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short", timeZone: tenant.timeZone }).format(tenant.lastInboundSyncAt)
             : null,
         },
       }
@@ -196,6 +216,7 @@ export default async function SettingsPage() {
     <>
       {isAdmin && cfgProps && <SettingsConfig section="ai" ai={cfgProps.ai} smtp={cfgProps.smtp} />}
       {apiContent}
+      <McpApprovals items={approvalRows} />
     </>
   );
 
@@ -226,7 +247,7 @@ export default async function SettingsPage() {
             bank
               ? {
                   applicationId: bank.applicationId, baseUrl: bank.baseUrl, psuType: bank.psuType, autoSync: bank.autoSync,
-                  lastAutoSyncAt: bank.lastAutoSyncAt ? dateTime(bank.lastAutoSyncAt, await getDateLocale(await getLocale())) : null,
+                  lastAutoSyncAt: bank.lastAutoSyncAt ? dateTime(bank.lastAutoSyncAt, await getDateLocale(await getLocale()), tenant?.timeZone) : null,
                 }
               : null
           }

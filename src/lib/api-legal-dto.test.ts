@@ -120,21 +120,21 @@ describe("P4.API rent adjustment list + ordering", () => {
     expect(tie.map((x) => x.id)).toEqual(["a", "b"]);
   });
 
-  it("wraps rows with pagination count/limit and applies ordering", () => {
+  it("wraps rows with pagination count/limit/total/offset and applies ordering", () => {
     const rows: RentAdjustmentRow[] = [
       adjRow({ id: "a", effectiveDate: new Date("2024-01-01T00:00:00.000Z") }),
       adjRow({ id: "b", effectiveDate: new Date("2026-01-01T00:00:00.000Z") }),
     ];
-    const dto = toRentAdjustmentListDto(rows, 50);
-    expect(dto.pagination).toEqual({ count: 2, limit: 50 });
+    const dto = toRentAdjustmentListDto(rows, 50, 7, 0);
+    expect(dto.pagination).toEqual({ count: 2, limit: 50, total: 7, offset: 0 });
     expect(dto.items.map((x) => x.id)).toEqual(["b", "a"]);
     expect(Object.keys(dto).sort()).toEqual(["items", "pagination"]);
   });
 
   it("returns an empty list for no history", () => {
-    const dto = toRentAdjustmentListDto([], 50);
+    const dto = toRentAdjustmentListDto([], 50, 0, 0);
     expect(dto.items).toEqual([]);
-    expect(dto.pagination).toEqual({ count: 0, limit: 50 });
+    expect(dto.pagination).toEqual({ count: 0, limit: 50, total: 0, offset: 0 });
   });
 });
 

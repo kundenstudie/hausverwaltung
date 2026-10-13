@@ -27,3 +27,40 @@ export function decryptSecret(enc: string): string {
   d.setAuthTag(tag);
   return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
 }
+
+export const SECRET_PREFIX = "v1:";
+
+/** true, wenn der Wert bereits als verschlüsseltes Secret ("v1:…") vorliegt. */
+export function isEncryptedSecret(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.startsWith(SECRET_PREFIX);
+}
+
+/**
+ * Typisierter, sanitizierter Fehler für fehlgeschlagene Entschlüsselung.
+ * Enthält bewusst weder Ciphertext noch Schlüsselmaterial (fail closed).
+ */
+export class SecretDecryptionError extends Error {
+  constructor() {
+    super(
+      "Gespeichertes Secret konnte nicht entschlüsselt werden (Schlüssel fehlt, wurde geändert oder Daten sind beschädigt)",
+    );
+    this.name = "SecretDecryptionError";
+  }
+}
+
+/**
+ * Lese-Boundary für at-rest Secrets: verschlüsselte Werte ("v1:…") werden
+ * entschlüsselt; Fehler (falscher Schlüssel, Auth-Tag-Fehler, korrupte Daten)
+ * schlagen hart fehl (fail closed, kein Silent-Fallback auf ENV/leer).
+ * Legacy-Plaintext (noch nicht verschlüsselt) wird für die Übergangszeit
+ * unverändert zurückgegeben. leer/undefined → undefined (ENV-Fallback möglich).
+ */
+export function decryptSecretValue(value: string | null | undefined): string | undefined {
+  if (value == null || value === "") return undefined;
+  if (!isEncryptedSecret(value)) return value; // Legacy-Plaintext (Kompatibilität)
+  try {
+    return decryptSecret(value);
+  } catch {
+    throw new SecretDecryptionError();
+  }
+}

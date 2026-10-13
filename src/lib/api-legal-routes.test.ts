@@ -89,17 +89,26 @@ describe("P4.API route GET /api/v1/leases/[id]/rent-adjustments", () => {
     expect(data.listLeaseRentAdjustments).not.toHaveBeenCalled();
   });
 
-  it("defaults limit to 50 and passes the limit through", async () => {
+  it("defaults limit to 50 and passes limit + offset through", async () => {
     auth.authenticateBearer.mockResolvedValue(principal);
-    data.listLeaseRentAdjustments.mockResolvedValue({ items: [], pagination: { count: 0, limit: 50 } });
+    data.listLeaseRentAdjustments.mockResolvedValue({ items: [], pagination: { count: 0, limit: 50, total: 0, offset: 0 } });
     const resDefault = await getRentAdjustments(adjustmentsReq("lease-1"), ctx("lease-1"));
     expect(resDefault.status).toBe(200);
-    expect(data.listLeaseRentAdjustments).toHaveBeenLastCalledWith("tenant-A", "lease-1", 50);
+    expect(data.listLeaseRentAdjustments).toHaveBeenLastCalledWith("tenant-A", "lease-1", 50, 0);
 
-    data.listLeaseRentAdjustments.mockResolvedValue({ items: [], pagination: { count: 0, limit: 200 } });
-    const resMax = await getRentAdjustments(adjustmentsReq("lease-1", "?limit=200"), ctx("lease-1"));
+    data.listLeaseRentAdjustments.mockResolvedValue({ items: [], pagination: { count: 0, limit: 200, total: 0, offset: 100 } });
+    const resMax = await getRentAdjustments(adjustmentsReq("lease-1", "?limit=200&offset=100"), ctx("lease-1"));
     expect(resMax.status).toBe(200);
-    expect(data.listLeaseRentAdjustments).toHaveBeenLastCalledWith("tenant-A", "lease-1", 200);
+    expect(data.listLeaseRentAdjustments).toHaveBeenLastCalledWith("tenant-A", "lease-1", 200, 100);
+  });
+
+  it("400 for invalid offset", async () => {
+    auth.authenticateBearer.mockResolvedValue(principal);
+    for (const q of ["?offset=-1", "?offset=abc"]) {
+      const res = await getRentAdjustments(adjustmentsReq("lease-1", q), ctx("lease-1"));
+      expect(res.status, q).toBe(400);
+    }
+    expect(data.listLeaseRentAdjustments).not.toHaveBeenCalled();
   });
 
   it("404 for unknown or foreign lease", async () => {

@@ -1,8 +1,4 @@
-import { authenticateBearer, unauthorized } from "@/lib/api-auth";
-import { listCharges } from "@/lib/api-data";
+import { listCharges, LIST_CONFIG } from "@/lib/api-data";
+import { listRoute } from "@/lib/api-list";
 
-export async function GET(req: Request) {
-  const p = await authenticateBearer(req);
-  if (!p) return unauthorized();
-  return Response.json(await listCharges(p.tenantId));
-}
+export const GET = listRoute(listCharges, LIST_CONFIG.charges);

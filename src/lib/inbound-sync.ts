@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { fetchInbox, isImapConfigured, type FetchedMail } from "@/lib/adapters/imap";
 import { dedupKey, matchPersonId, clampAttachMaxMb, isReplySubject, normalizeSubject, threadKey } from "@/lib/inbound";
 import { saveFile } from "@/lib/storage";
+import { decryptSecretValue } from "@/lib/crypto";
 
 export type InboundSyncResult = { imported: number; matched: number } | { error: string };
 
@@ -58,10 +59,17 @@ export async function syncTenantInbox(tenantId: string): Promise<InboundSyncResu
     where: { id: tenantId },
     select: { imapHost: true, imapPort: true, imapUser: true, imapPassword: true, imapSecure: true, imapMailbox: true, lastInboundSyncAt: true, imapAttachments: true, imapAttachMaxMb: true },
   });
-  const cfg = {
-    host: tenant?.imapHost, port: tenant?.imapPort, user: tenant?.imapUser,
-    password: tenant?.imapPassword, secure: tenant?.imapSecure, mailbox: tenant?.imapMailbox,
-  };
+  const cfg = (() => {
+    try {
+      return {
+        host: tenant?.imapHost, port: tenant?.imapPort, user: tenant?.imapUser,
+        password: decryptSecretValue(tenant?.imapPassword), secure: tenant?.imapSecure, mailbox: tenant?.imapMailbox,
+      };
+    } catch {
+      return null;
+    }
+  })();
+  if (!cfg) return { error: "IMAP-Passwort konnte nicht entschlüsselt werden" };
   if (!isImapConfigured(cfg)) return { error: "Kein IMAP-Postfach konfiguriert (Einstellungen → E-Mail)." };
 
   // Etwas Überlappung zum letzten Sync, damit nichts verloren geht (Dedup fängt Doppelte).

@@ -1,11 +1,8 @@
 import { authenticateBearer, unauthorized } from "@/lib/api-auth";
-import { listTickets, createTicket } from "@/lib/api-data";
+import { listTickets, createTicket, LIST_CONFIG } from "@/lib/api-data";
+import { listRoute } from "@/lib/api-list";
 
-export async function GET(req: Request) {
-  const p = await authenticateBearer(req);
-  if (!p) return unauthorized();
-  return Response.json(await listTickets(p.tenantId));
-}
+export const GET = listRoute(listTickets, LIST_CONFIG.tickets);
 
 export async function POST(req: Request) {
   const p = await authenticateBearer(req);

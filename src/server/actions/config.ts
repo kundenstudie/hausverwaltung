@@ -8,6 +8,8 @@ import { pingAi } from "@/lib/ai";
 import { verifyMailer } from "@/lib/adapters/mailer";
 import { verifyImap } from "@/lib/adapters/imap";
 import { clampSyncInterval, clampAttachMaxMb } from "@/lib/inbound";
+import { encryptSecret, decryptSecretValue } from "@/lib/crypto";
+import { isValidIanaTimezone } from "@/lib/timezone";
 import type { ActionState } from "@/lib/schemas";
 
 const str = (v: FormDataEntryValue | null) => {
@@ -53,6 +55,19 @@ export async function updateDateFormat(_p: ActionState, fd: FormData): Promise<A
   return { ok: true };
 }
 
+// --- Zeitzone ---
+
+export async function updateTimeZone(_p: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireRole(["ADMIN"]);
+  const raw = str(fd.get("timeZone"));
+  if (!raw) return { error: "Zeitzone erforderlich" };
+  if (!isValidIanaTimezone(raw)) return { error: "Ungültige IANA-Zeitzone" };
+  await prisma.tenant.update({ where: { id: user.tenantId }, data: { timeZone: raw } });
+  await audit(user, "UPDATE", "Tenant", user.tenantId, `Zeitzone: ${raw}`);
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
 // --- KI-Konfiguration ---
 
 export async function updateAiConfig(_p: ActionState, fd: FormData): Promise<ActionState> {
@@ -67,7 +82,7 @@ export async function updateAiConfig(_p: ActionState, fd: FormData): Promise<Act
       aiProvider: provider ?? null,
       aiBaseUrl: baseUrl ?? null,
       aiModel: model ?? null,
-      ...(apiKey ? { aiApiKey: apiKey } : {}),
+      ...(apiKey ? { aiApiKey: encryptSecret(apiKey) } : {}),
     },
   });
   await audit(user, "UPDATE", "Tenant", user.tenantId, "KI-Konfiguration");
@@ -82,7 +97,7 @@ export async function testAiConfig(_p: ActionState, _fd: FormData): Promise<Acti
     select: { aiProvider: true, aiBaseUrl: true, aiApiKey: true, aiModel: true },
   });
   try {
-    await pingAi({ provider: t?.aiProvider, baseUrl: t?.aiBaseUrl, apiKey: t?.aiApiKey, model: t?.aiModel });
+    await pingAi({ provider: t?.aiProvider, baseUrl: t?.aiBaseUrl, apiKey: decryptSecretValue(t?.aiApiKey), model: t?.aiModel });
     return { ok: true };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "KI-Test fehlgeschlagen" };
@@ -103,7 +118,7 @@ export async function updateSmtpConfig(_p: ActionState, fd: FormData): Promise<A
       smtpUser: str(fd.get("smtpUser")) ?? null,
       smtpFrom: str(fd.get("smtpFrom")) ?? null,
       smtpSecure: String(fd.get("smtpSecure")) === "true",
-      ...(password ? { smtpPassword: password } : {}),
+      ...(password ? { smtpPassword: encryptSecret(password) } : {}),
     },
   });
   await audit(user, "UPDATE", "Tenant", user.tenantId, "SMTP-Konfiguration");
@@ -123,7 +138,7 @@ export async function testSmtpConfig(_p: ActionState, _fd: FormData): Promise<Ac
   try {
     await verifyMailer({
       host: t?.smtpHost, port: t?.smtpPort, user: t?.smtpUser,
-      password: t?.smtpPassword, from: t?.smtpFrom, secure: t?.smtpSecure,
+      password: decryptSecretValue(t?.smtpPassword), from: t?.smtpFrom, secure: t?.smtpSecure,
     });
     return { ok: true };
   } catch (e) {
@@ -149,7 +164,7 @@ export async function updateImapConfig(_p: ActionState, fd: FormData): Promise<A
       imapSyncIntervalMin: clampSyncInterval(Number(fd.get("imapSyncIntervalMin"))),
       imapAttachments: fd.get("imapAttachments") === "on",
       imapAttachMaxMb: clampAttachMaxMb(Number(fd.get("imapAttachMaxMb"))),
-      ...(password ? { imapPassword: password } : {}),
+      ...(password ? { imapPassword: encryptSecret(password) } : {}),
     },
   });
   await audit(user, "UPDATE", "Tenant", user.tenantId, "IMAP-Konfiguration");
@@ -166,7 +181,7 @@ export async function testImapConfig(_p: ActionState, _fd: FormData): Promise<Ac
   try {
     await verifyImap({
       host: t?.imapHost, port: t?.imapPort, user: t?.imapUser,
-      password: t?.imapPassword, secure: t?.imapSecure, mailbox: t?.imapMailbox,
+      password: decryptSecretValue(t?.imapPassword), secure: t?.imapSecure, mailbox: t?.imapMailbox,
     });
     return { ok: true };
   } catch (e) {

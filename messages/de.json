@@ -122,6 +122,8 @@
     "editUser": "Benutzer bearbeiten",
     "dateFormat": "Datumsformat",
     "dateFormatHint": "Format für Datumsanzeigen, unabhängig von der UI-Sprache.",
+    "timeZone": "Zeitzone",
+    "timeZoneHint": "Zeitzone für Datums-/Uhrzeitanzeigen und lokale Tagesgrenzen (Fristen/Termine).",
     "dateFormatOptions": {
       "auto": "Automatisch (UI-Sprache)",
       "de": "31.12.2026 (TT.MM.JJJJ)",
@@ -250,6 +252,13 @@
     "revoked": "widerrufen",
     "delete": "Löschen",
     "lastUsed": "zuletzt genutzt"
+  },
+  "mcpApproval": {
+    "title": "Freigaben für MCP-Aktionen",
+    "hint": "Externe KI-Agenten haben materielle Aktionen angefordert. Sie werden erst nach Freigabe ausgeführt.",
+    "approve": "Freigeben",
+    "reject": "Ablehnen",
+    "done": "Freigabe aktualisiert"
   },
   "login": {
     "title": "Anmelden",

@@ -1,0 +1,21 @@
+# Dedizierte PostgreSQL-Testdatenbank für HAVEWA-03.
+# GETRENNT von der Entwicklungs-/Produktions-DB (docker-compose.yml, Port 5432).
+# Eigener Port (5433), eigene Credentials, eigenes Volume → keine Berührung mit
+# echten Daten. Aufruf:
+#   docker compose -f docker-compose.test.yml up -d
+services:
+  db-test:
+    image: postgres:16-alpine
+    container_name: havewa-test-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: havewa_test
+      POSTGRES_PASSWORD: havewa_test
+      POSTGRES_DB: havewa_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - havewa-test-db:/var/lib/postgresql/data
+
+volumes:
+  havewa-test-db:

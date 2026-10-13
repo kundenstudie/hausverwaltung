@@ -151,6 +151,10 @@ model Tenant {
   // Datumsformat unabhängig von der UI-Sprache ("de-DE" | "en-GB" | "en-US" | "iso")
   dateFormat String?
 
+  // Mandanten-Zeitzone (IANA, z. B. "Europe/Berlin"). Für Anzeige, lokale
+  // Tagesgrenzen und lokale Termin-/Fristsemantik. Default Europe/Berlin.
+  timeZone String @default("Europe/Berlin")
+
   // HeizkostenV: Standard-Verbrauchsanteil in % (50–100, Rest nach Fläche).
   // null → 70 %. Je Kostenposition überschreibbar (CostEntry.consumptionSharePct).
   heatingConsumptionPct Int?
@@ -1159,4 +1163,38 @@ model PropertyTax {
   createdAt      DateTime @default(now())
 
   @@index([tenantId])
+}
+
+// ---------- MCP Human Approval (HAVEWA-02) ----------
+
+enum McpApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Freigabe-Zustand für materielle/destruktive MCP-Aktionen. Ersetzt kein RBAC,
+// sondern ist eine zusätzliche, menschengebundene Schranke. argsEnc enthält die
+// Ausführungs-Argumente (ggf. mit Credentials) AES-256-GCM-verschlüsselt at-rest.
+model McpApproval {
+  id            String            @id @default(cuid())
+  tenantId      String
+  requestedById String // anfragender Benutzer (MCP-Token-Inhaber)
+  requesterName String?
+  tool          String // MCP-Tool, z. B. "run_operation", "delete_record"
+  operationType String? // bei run_operation
+  entity        String? // bei create/update/delete_record
+  targetId      String? // bei update/delete_record
+  summary       String // sanitized Kurzbeschreibung (ohne Secrets)
+  argsEnc       String // verschlüsselte JSON-Args (AES-256-GCM, lib/crypto)
+  status        McpApprovalStatus @default(PENDING)
+  requestedAt   DateTime          @default(now())
+  decidedById   String? // Freigebender
+  decidedAt     DateTime?
+  outcome       String? // "OK" | "FEHLER" (kurz, ohne Secrets)
+  executedAt    DateTime?
+  createdAt     DateTime          @default(now())
+
+  @@index([tenantId, status])
+  @@index([tenantId, requestedAt])
 }

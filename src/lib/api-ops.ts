@@ -6,6 +6,7 @@ import { sendMail, type MailAttachment } from "@/lib/adapters/mailer";
 import { readFile, saveFile } from "@/lib/storage";
 import { parseCamt053 } from "@/lib/adapters/bankImport";
 import { isEInvoice, parseEInvoice } from "@/lib/adapters/erechnung";
+import { encryptSecret, decryptSecretValue } from "@/lib/crypto";
 
 // Dedizierte Operationen (kein reines CRUD) für REST-API + MCP.
 // Fachlogik gespiegelt aus den Server Actions, aber Bearer-Auth statt Session.
@@ -74,7 +75,7 @@ async function smtpConfig(tenantId: string) {
     where: { id: tenantId },
     select: { smtpHost: true, smtpPort: true, smtpUser: true, smtpPassword: true, smtpFrom: true, smtpSecure: true },
   });
-  return { host: t?.smtpHost, port: t?.smtpPort, user: t?.smtpUser, password: t?.smtpPassword, from: t?.smtpFrom, secure: t?.smtpSecure };
+  return { host: t?.smtpHost, port: t?.smtpPort, user: t?.smtpUser, password: decryptSecretValue(t?.smtpPassword), from: t?.smtpFrom, secure: t?.smtpSecure };
 }
 const addrList = (v: unknown) => String(v ?? "").split(/[,;]/).map((x) => x.trim()).filter(Boolean);
 
@@ -305,7 +306,7 @@ export const OPERATIONS: Record<string, Op> = {
     run: async (p, a) => {
       await prisma.tenant.update({
         where: { id: p.tenantId },
-        data: { aiProvider: s(a.provider) ?? null, aiBaseUrl: s(a.baseUrl) ?? null, aiModel: s(a.model) ?? null, ...(s(a.apiKey) ? { aiApiKey: s(a.apiKey) } : {}) },
+        data: { aiProvider: s(a.provider) ?? null, aiBaseUrl: s(a.baseUrl) ?? null, aiModel: s(a.model) ?? null, ...(s(a.apiKey) ? { aiApiKey: encryptSecret(s(a.apiKey)!) } : {}) },
       });
       return { ok: true };
     },
@@ -320,7 +321,7 @@ export const OPERATIONS: Record<string, Op> = {
         where: { id: p.tenantId },
         data: {
           smtpHost: s(a.host) ?? null, smtpPort: a.port != null ? Number(a.port) : null, smtpUser: s(a.user) ?? null,
-          smtpFrom: s(a.from) ?? null, smtpSecure: String(a.secure) === "true", ...(s(a.password) ? { smtpPassword: s(a.password) } : {}),
+          smtpFrom: s(a.from) ?? null, smtpSecure: String(a.secure) === "true", ...(s(a.password) ? { smtpPassword: encryptSecret(s(a.password)!) } : {}),
         },
       });
       return { ok: true };

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Minimaler Qualitäts-Gate (HAVEWA-03, Abschnitt 16): install → prisma generate →
+# validate → migrate (Test-DB) → unit → typecheck → lint → build → Integration.
+# Lint wird NICHT künstlich deaktiviert; eine ggf. vorbestehende Lint-Baseline wird
+# im Abschlussbericht dokumentiert (kein neues Lint-Finding durch HAVEWA-03).
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: havewa_test
+          POSTGRES_PASSWORD: havewa_test
+          POSTGRES_DB: havewa_test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U havewa_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://havewa_test:havewa_test@localhost:5432/havewa_test?schema=public
+      DATABASE_URL_TEST: postgresql://havewa_test:havewa_test@localhost:5432/havewa_test?schema=public
+      AUTH_SECRET: test-secret-for-crypto
+      AUTH_TRUST_HOST: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma validate
+      - run: npm run test:db:migrate
+      - run: npm run test:unit
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run test:integration

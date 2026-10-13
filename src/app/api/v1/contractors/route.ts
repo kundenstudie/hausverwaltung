@@ -1,8 +1,4 @@
-import { authenticateBearer, unauthorized } from "@/lib/api-auth";
-import { listContractors } from "@/lib/api-data";
+import { listContractors, LIST_CONFIG } from "@/lib/api-data";
+import { listRoute } from "@/lib/api-list";
 
-export async function GET(req: Request) {
-  const p = await authenticateBearer(req);
-  if (!p) return unauthorized();
-  return Response.json(await listContractors(p.tenantId));
-}
+export const GET = listRoute(listContractors, LIST_CONFIG.contractors);

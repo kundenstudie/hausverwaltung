@@ -30,7 +30,9 @@ export interface RentAdjustmentReadDto {
 
 export interface RentAdjustmentListDto {
   readonly items: readonly RentAdjustmentReadDto[];
-  readonly pagination: { readonly count: number; readonly limit: number };
+  // HAVEWA-04 (MRC-04): count/limit bleiben abwärtskompatibel (PropertyAI read
+  // adapter), total/offset machen die Historie vollständig deterministisch iterierbar.
+  readonly pagination: { readonly count: number; readonly limit: number; readonly total: number; readonly offset: number };
 }
 
 /** Structural row shapes (accept Prisma results without importing Prisma types). */
@@ -104,7 +106,9 @@ export function compareRentAdjustmentsNewestFirst(a: RentAdjustmentReadDto, b: R
 export function toRentAdjustmentListDto(
   rows: readonly RentAdjustmentRow[],
   limit: number,
+  total: number,
+  offset: number,
 ): RentAdjustmentListDto {
   const items = rows.map(toRentAdjustmentReadDto).sort(compareRentAdjustmentsNewestFirst);
-  return { items, pagination: { count: items.length, limit } };
+  return { items, pagination: { count: items.length, limit, total, offset } };
 }

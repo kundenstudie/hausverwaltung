@@ -1,11 +1,8 @@
 import { authenticateBearer, unauthorized } from "@/lib/api-auth";
-import { listPersons, createPerson } from "@/lib/api-data";
+import { listPersons, createPerson, LIST_CONFIG } from "@/lib/api-data";
+import { listRoute } from "@/lib/api-list";
 
-export async function GET(req: Request) {
-  const p = await authenticateBearer(req);
-  if (!p) return unauthorized();
-  return Response.json(await listPersons(p.tenantId));
-}
+export const GET = listRoute(listPersons, LIST_CONFIG.persons);
 
 export async function POST(req: Request) {
   const p = await authenticateBearer(req);

@@ -13,6 +13,7 @@ import { htmlToText, escapeHtml, textToHtml } from "@/lib/mail-html";
 import { wohnungsgeberPdf } from "@/server/wohnungsgeber";
 import { messageIdFor, refIds, threadKey } from "@/lib/inbound";
 import { threadWhere } from "@/lib/threads";
+import { decryptSecretValue } from "@/lib/crypto";
 
 /**
  * Antwort-Kontext (#43): Vorgänger-Mail (ein- oder ausgehend) → Thread und
@@ -85,7 +86,7 @@ async function smtpConfig(tenantId: string) {
   });
   return {
     host: t?.smtpHost, port: t?.smtpPort, user: t?.smtpUser,
-    password: t?.smtpPassword, from: t?.smtpFrom, secure: t?.smtpSecure,
+    password: decryptSecretValue(t?.smtpPassword), from: t?.smtpFrom, secure: t?.smtpSecure,
   };
 }
 
@@ -98,7 +99,17 @@ export async function sendEmail(fd: FormData): Promise<void> {
   });
   if (!msg) return;
 
-  const cfg = await smtpConfig(user.tenantId);
+  let cfg;
+  try {
+    cfg = await smtpConfig(user.tenantId);
+  } catch (e) {
+    await prisma.emailMessage.update({
+      where: { id: msg.id },
+      data: { status: "FEHLER", error: e instanceof Error ? e.message : "Konfiguration nicht lesbar" },
+    });
+    revalidatePath("/", "layout");
+    return;
+  }
   const messageId = msg.messageId ?? messageIdFor(msg.id, smtpFromAddress(cfg));
   try {
     // Anhänge aus der Dokumentenablage laden.

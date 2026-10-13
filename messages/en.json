@@ -122,6 +122,8 @@
     "editUser": "Edit user",
     "dateFormat": "Date format",
     "dateFormatHint": "Format for date display, independent of the UI language.",
+    "timeZone": "Time zone",
+    "timeZoneHint": "Time zone for date/time display and local day boundaries (deadlines/appointments).",
     "dateFormatOptions": {
       "auto": "Automatic (UI language)",
       "de": "31.12.2026 (DD.MM.YYYY)",
@@ -250,6 +252,13 @@
     "revoked": "revoked",
     "delete": "Delete",
     "lastUsed": "last used"
+  },
+  "mcpApproval": {
+    "title": "MCP action approvals",
+    "hint": "External AI agents requested material actions. They run only after approval.",
+    "approve": "Approve",
+    "reject": "Reject",
+    "done": "Approval updated"
   },
   "login": {
     "title": "Sign in",

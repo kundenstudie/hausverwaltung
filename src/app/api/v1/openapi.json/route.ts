@@ -1,11 +1,49 @@
 // OpenAPI 3.1 Beschreibung der HaVeWa REST-API. Öffentlich (keine Geheimnisse),
 // dient Scalar/Swagger als Referenz.
+//
+// HAVEWA-04: List-Parameter (page/pageSize/sort/order/Filter) und das
+// Pagination-Envelope werden direkt aus LIST_CONFIG generiert, damit die
+// Dokumentation dem realen Contract entspricht (keine Dokumentationslüge).
 
-const listOp = (tag: string, summary: string) => ({
+import { LIST_CONFIG } from "@/lib/api-data";
+import type { ListConfig, FilterSpec } from "@/lib/api-list";
+
+function filterParamSchema(spec: FilterSpec): { type: string; enum?: string[] } {
+  if (spec.kind === "boolean") return { type: "string", enum: ["true", "false"] };
+  if (spec.kind === "int") return { type: "integer" };
+  if (spec.kind === "enum") return { type: "string", enum: [...spec.values] };
+  return { type: "string" };
+}
+
+function listParameters(config: ListConfig) {
+  return [
+    { name: "page", in: "query", required: false, schema: { type: "integer", minimum: 1, default: 1 }, description: "Seite (1-basiert). Wird nur bei gesetzten List-Parametern paginiert." },
+    { name: "pageSize", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 200, default: 50 }, description: "Seitengröße (hartes Maximum 200)." },
+    { name: "sort", in: "query", required: false, schema: { type: "string", enum: [...config.sort] }, description: "Sortierfeld (Whitelist)." },
+    { name: "order", in: "query", required: false, schema: { type: "string", enum: ["asc", "desc"] }, description: "Sortierrichtung." },
+    ...Object.entries(config.filters).map(([name, spec]) => ({
+      name,
+      in: "query",
+      required: false,
+      schema: filterParamSchema(spec),
+      description: "Filter (fachlich, tenant-sicher).",
+    })),
+  ] as const;
+}
+
+const listOp = (tag: string, summary: string, config: ListConfig) => ({
   tags: [tag],
   summary,
+  description:
+    "Ohne List-Parameter: Legacy-Array (vollständige Liste, unverändert). " +
+    "Mit mindestens einem List-Parameter: { data: [...], pagination: { page, pageSize, total, totalPages, hasNext, hasPrevious } }.",
   security: [{ bearerAuth: [] }],
-  responses: { "200": { description: "OK" }, "401": { description: "Unauthorized" } },
+  parameters: listParameters(config),
+  responses: {
+    "200": { description: "OK — Array (legacy) oder paginiertes Envelope" },
+    "400": { description: "Ungültige Pagination/Filter/Sort" },
+    "401": { description: "Unauthorized" },
+  },
 });
 
 const spec = {
@@ -28,7 +66,7 @@ const spec = {
     "/api/v1/me": {
       get: { tags: ["Allgemein"], summary: "Eigene Info + Portfolio-Kennzahlen", security: [{ bearerAuth: [] }], responses: { "200": { description: "OK" }, "401": { description: "Unauthorized" } } },
     },
-    "/api/v1/properties": { get: listOp("Objekte", "Objekte auflisten") },
+    "/api/v1/properties": { get: listOp("Objekte", "Objekte auflisten", LIST_CONFIG.properties) },
     "/api/v1/properties/{id}": {
       get: {
         tags: ["Objekte"],
@@ -38,24 +76,24 @@ const spec = {
         responses: { "200": { description: "OK" }, "404": { description: "Not found" } },
       },
     },
-    "/api/v1/units": { get: listOp("Einheiten", "Einheiten auflisten") },
-    "/api/v1/meters": { get: listOp("Einheiten", "Zähler + letzter Stand auflisten") },
-    "/api/v1/owners": { get: listOp("Einheiten", "Eigentümer-Zuordnungen auflisten") },
-    "/api/v1/leases": { get: listOp("Verträge", "Mietverträge auflisten") },
-    "/api/v1/open-items": { get: listOp("Finanzen", "Offene Posten auflisten") },
-    "/api/v1/accounts": { get: listOp("Finanzen", "Konten + Saldo auflisten") },
-    "/api/v1/charges": { get: listOp("Finanzen", "Sollstellungen auflisten") },
-    "/api/v1/payments": { get: listOp("Finanzen", "Zahlungen auflisten") },
-    "/api/v1/documents": { get: listOp("Dokumente", "Dokumente auflisten") },
-    "/api/v1/meetings": { get: listOp("Versammlung", "Eigentümerversammlungen auflisten") },
-    "/api/v1/resolutions": { get: listOp("Versammlung", "Beschlusssammlung auflisten") },
-    "/api/v1/economic-plans": { get: listOp("WEG", "Wirtschaftspläne auflisten") },
-    "/api/v1/reserves": { get: listOp("WEG", "Erhaltungsrücklagen + Saldo auflisten") },
-    "/api/v1/appointments": { get: listOp("Kalender", "Termine auflisten") },
-    "/api/v1/contractors": { get: listOp("Instandhaltung", "Handwerker/Dienstleister auflisten") },
-    "/api/v1/maintenance-contracts": { get: listOp("Instandhaltung", "Wartungsverträge auflisten") },
-    "/api/v1/insurances": { get: listOp("Weitere", "Versicherungen auflisten") },
-    "/api/v1/property-taxes": { get: listOp("Weitere", "Grundsteuer auflisten") },
+    "/api/v1/units": { get: listOp("Einheiten", "Einheiten auflisten", LIST_CONFIG.units) },
+    "/api/v1/meters": { get: listOp("Einheiten", "Zähler + letzter Stand auflisten", LIST_CONFIG.meters) },
+    "/api/v1/owners": { get: listOp("Einheiten", "Eigentümer-Zuordnungen auflisten", LIST_CONFIG.owners) },
+    "/api/v1/leases": { get: listOp("Verträge", "Mietverträge auflisten", LIST_CONFIG.leases) },
+    "/api/v1/open-items": { get: listOp("Finanzen", "Offene Posten auflisten", LIST_CONFIG.openItems) },
+    "/api/v1/accounts": { get: listOp("Finanzen", "Konten + Saldo auflisten", LIST_CONFIG.accounts) },
+    "/api/v1/charges": { get: listOp("Finanzen", "Sollstellungen auflisten", LIST_CONFIG.charges) },
+    "/api/v1/payments": { get: listOp("Finanzen", "Zahlungen auflisten", LIST_CONFIG.payments) },
+    "/api/v1/documents": { get: listOp("Dokumente", "Dokumente auflisten", LIST_CONFIG.documents) },
+    "/api/v1/meetings": { get: listOp("Versammlung", "Eigentümerversammlungen auflisten", LIST_CONFIG.meetings) },
+    "/api/v1/resolutions": { get: listOp("Versammlung", "Beschlusssammlung auflisten", LIST_CONFIG.resolutions) },
+    "/api/v1/economic-plans": { get: listOp("WEG", "Wirtschaftspläne auflisten", LIST_CONFIG.economicPlans) },
+    "/api/v1/reserves": { get: listOp("WEG", "Erhaltungsrücklagen + Saldo auflisten", LIST_CONFIG.reserves) },
+    "/api/v1/appointments": { get: listOp("Kalender", "Termine auflisten", LIST_CONFIG.appointments) },
+    "/api/v1/contractors": { get: listOp("Instandhaltung", "Handwerker/Dienstleister auflisten", LIST_CONFIG.contractors) },
+    "/api/v1/maintenance-contracts": { get: listOp("Instandhaltung", "Wartungsverträge auflisten", LIST_CONFIG.maintenanceContracts) },
+    "/api/v1/insurances": { get: listOp("Weitere", "Versicherungen auflisten", LIST_CONFIG.insurances) },
+    "/api/v1/property-taxes": { get: listOp("Weitere", "Grundsteuer auflisten", LIST_CONFIG.propertyTaxes) },
     "/api/v1/operations": {
       get: {
         tags: ["Operationen"],
@@ -125,7 +163,7 @@ const spec = {
       },
     },
     "/api/v1/tasks": {
-      get: listOp("Aufgaben", "Aufgaben auflisten"),
+      get: listOp("Aufgaben", "Aufgaben auflisten", LIST_CONFIG.tasks),
       post: {
         tags: ["Aufgaben"],
         summary: "Aufgabe anlegen",
@@ -146,7 +184,7 @@ const spec = {
       },
     },
     "/api/v1/persons": {
-      get: listOp("Personen", "Personen auflisten"),
+      get: listOp("Personen", "Personen auflisten", LIST_CONFIG.persons),
       post: {
         tags: ["Personen"],
         summary: "Person anlegen",
@@ -173,7 +211,7 @@ const spec = {
       },
     },
     "/api/v1/tickets": {
-      get: listOp("Instandhaltung", "Tickets auflisten"),
+      get: listOp("Instandhaltung", "Tickets auflisten", LIST_CONFIG.tickets),
       post: {
         tags: ["Instandhaltung"],
         summary: "Ticket anlegen",
@@ -237,6 +275,7 @@ const spec = {
         parameters: [
           { name: "id", in: "path", required: true, schema: { type: "string" } },
           { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
+          { name: "offset", in: "query", required: false, schema: { type: "integer", minimum: 0, default: 0 } },
         ],
         responses: {
           "200": {
@@ -269,8 +308,13 @@ const spec = {
                     pagination: {
                       type: "object",
                       additionalProperties: false,
-                      required: ["count", "limit"],
-                      properties: { count: { type: "integer" }, limit: { type: "integer" } },
+                      required: ["count", "limit", "total", "offset"],
+                      properties: {
+                        count: { type: "integer", description: "Gelieferte Items dieser Seite." },
+                        limit: { type: "integer", description: "Angeforderte Seitengröße." },
+                        total: { type: "integer", description: "Gesamtzahl der Anpassungen (vollständige Historie beweisbar)." },
+                        offset: { type: "integer", description: "Verwendeter Offset." },
+                      },
                     },
                   },
                 },

@@ -5,8 +5,19 @@ import { requireUser } from "@/lib/rbac";
 import { isAiConfigured, askAssistant } from "@/lib/ai";
 import { computeStatement } from "@/server/statements";
 import { money } from "@/lib/format";
+import { decryptSecretValue } from "@/lib/crypto";
 
 export type AssistantState = { answer?: string; configured?: boolean; error?: string };
+
+/** Liest die Mandanten-KI-Konfiguration inkl. entschlüsseltem API-Schlüssel (fail closed). */
+function aiConfigFrom(tenant: { aiProvider: string | null; aiBaseUrl: string | null; aiApiKey: string | null; aiModel: string | null } | null) {
+  return {
+    provider: tenant?.aiProvider,
+    baseUrl: tenant?.aiBaseUrl,
+    apiKey: decryptSecretValue(tenant?.aiApiKey),
+    model: tenant?.aiModel,
+  };
+}
 
 /** Baut einen kompakten Bestands-Kontext (nur Kennzahlen, keine PII) für den Assistenten. */
 async function buildContext(tenantId: string) {
@@ -64,7 +75,12 @@ export async function askAssistantAction(_prev: AssistantState, fd: FormData): P
     where: { id: user.tenantId },
     select: { aiProvider: true, aiBaseUrl: true, aiApiKey: true, aiModel: true },
   });
-  const aiCfg = { provider: tenant?.aiProvider, baseUrl: tenant?.aiBaseUrl, apiKey: tenant?.aiApiKey, model: tenant?.aiModel };
+  let aiCfg;
+  try {
+    aiCfg = aiConfigFrom(tenant);
+  } catch {
+    return { error: "Gespeicherter KI-Schlüssel konnte nicht entschlüsselt werden.", configured: false };
+  }
   const configured = isAiConfigured(aiCfg);
 
   if (!configured) {
@@ -95,7 +111,12 @@ export async function explainStatement(_p: AssistantState, fd: FormData): Promis
 
   const st = await computeStatement(user.tenantId, propertyId, year);
   const tenant = await prisma.tenant.findUnique({ where: { id: user.tenantId }, select: { aiProvider: true, aiBaseUrl: true, aiApiKey: true, aiModel: true } });
-  const aiCfg = { provider: tenant?.aiProvider, baseUrl: tenant?.aiBaseUrl, apiKey: tenant?.aiApiKey, model: tenant?.aiModel };
+  let aiCfg;
+  try {
+    aiCfg = aiConfigFrom(tenant);
+  } catch {
+    return { error: "Gespeicherter KI-Schlüssel konnte nicht entschlüsselt werden.", configured: false };
+  }
 
   const ctx = {
     objekt: st.property?.name,

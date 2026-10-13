@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   leaseFindFirst: vi.fn(),
   rentAdjustmentFindMany: vi.fn(),
+  rentAdjustmentCount: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     lease: { findFirst: mocks.leaseFindFirst },
-    rentAdjustment: { findMany: mocks.rentAdjustmentFindMany },
+    rentAdjustment: { findMany: mocks.rentAdjustmentFindMany, count: mocks.rentAdjustmentCount },
   },
 }));
 
@@ -17,6 +18,8 @@ import { getLeaseLegalContext, listLeaseRentAdjustments } from "@/lib/api-data";
 beforeEach(() => {
   mocks.leaseFindFirst.mockReset();
   mocks.rentAdjustmentFindMany.mockReset();
+  mocks.rentAdjustmentCount.mockReset();
+  mocks.rentAdjustmentCount.mockResolvedValue(0);
 });
 
 describe("P4.API getLeaseLegalContext (data layer, tenant-scoped)", () => {
@@ -62,10 +65,12 @@ describe("P4.API listLeaseRentAdjustments (data layer, tenant-scoped, defense in
     const result = await listLeaseRentAdjustments("tenant-A", "lease-B", 50);
     expect(result).toBeNull();
     expect(mocks.rentAdjustmentFindMany).not.toHaveBeenCalled();
+    expect(mocks.rentAdjustmentCount).not.toHaveBeenCalled();
   });
 
-  it("queries adjustments by leaseId AND tenantId with deterministic order and no note select", async () => {
+  it("queries adjustments by leaseId AND tenantId with deterministic order, no note select, and total count", async () => {
     mocks.leaseFindFirst.mockResolvedValue({ id: "lease-1" });
+    mocks.rentAdjustmentCount.mockResolvedValue(7);
     mocks.rentAdjustmentFindMany.mockResolvedValue([
       {
         id: "adj-1",
@@ -78,11 +83,12 @@ describe("P4.API listLeaseRentAdjustments (data layer, tenant-scoped, defense in
         applied: false,
       },
     ]);
-    const result = await listLeaseRentAdjustments("tenant-A", "lease-1", 50);
+    const result = await listLeaseRentAdjustments("tenant-A", "lease-1", 50, 100);
 
     expect(mocks.rentAdjustmentFindMany).toHaveBeenCalledWith({
       where: { leaseId: "lease-1", tenantId: "tenant-A" },
       orderBy: [{ effectiveDate: "desc" }, { id: "asc" }],
+      skip: 100,
       take: 50,
       select: {
         id: true,
@@ -95,6 +101,7 @@ describe("P4.API listLeaseRentAdjustments (data layer, tenant-scoped, defense in
         applied: true,
       },
     });
+    expect(mocks.rentAdjustmentCount).toHaveBeenCalledWith({ where: { leaseId: "lease-1", tenantId: "tenant-A" } });
     const select = (mocks.rentAdjustmentFindMany.mock.calls[0][0] as { select: Record<string, unknown> }).select;
     expect(select).not.toHaveProperty("note");
     expect(select).not.toHaveProperty("tenantId");
@@ -112,7 +119,7 @@ describe("P4.API listLeaseRentAdjustments (data layer, tenant-scoped, defense in
           applied: false,
         },
       ],
-      pagination: { count: 1, limit: 50 },
+      pagination: { count: 1, limit: 50, total: 7, offset: 100 },
     });
   });
 
@@ -120,13 +127,15 @@ describe("P4.API listLeaseRentAdjustments (data layer, tenant-scoped, defense in
     mocks.leaseFindFirst.mockResolvedValue({ id: "lease-1" });
     mocks.rentAdjustmentFindMany.mockResolvedValue([]);
     const result = await listLeaseRentAdjustments("tenant-A", "lease-1", 50);
-    expect(result).toEqual({ items: [], pagination: { count: 0, limit: 50 } });
+    expect(result).toEqual({ items: [], pagination: { count: 0, limit: 50, total: 0, offset: 0 } });
   });
 
-  it("passes the exact limit through to the query", async () => {
+  it("passes the exact limit (and default offset 0) through to the query", async () => {
     mocks.leaseFindFirst.mockResolvedValue({ id: "lease-1" });
     mocks.rentAdjustmentFindMany.mockResolvedValue([]);
     await listLeaseRentAdjustments("tenant-A", "lease-1", 1);
-    expect((mocks.rentAdjustmentFindMany.mock.calls[0][0] as { take: number }).take).toBe(1);
+    const call = mocks.rentAdjustmentFindMany.mock.calls[0][0] as { take: number; skip: number };
+    expect(call.take).toBe(1);
+    expect(call.skip).toBe(0);
   });
 });
