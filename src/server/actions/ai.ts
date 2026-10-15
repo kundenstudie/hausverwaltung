@@ -122,6 +122,13 @@ export async function explainStatement(_p: AssistantState, fd: FormData): Promis
     objekt: st.property?.name,
     jahr: year,
     summeUmlagefaehig: st.totalUmlage,
+    // HAVEWA-05A: effektiver Heating-Modus (NONE|METER|AREA_FALLBACK|MIXED).
+    // Verhindert, dass das LLM einen pauschalen HeizkostenV-Split behauptet,
+    // wenn tatsächlich nur Flächenverteilung verwendet wurde.
+    heizModus: st.heatingAllocation?.mode ?? "NONE",
+    heizModusDetail: st.heatingAllocation
+      ? { meter: st.heatingAllocation.meterCosts, flaeche: st.heatingAllocation.fallbackCosts }
+      : undefined,
     kosten: st.costs.map((c) => ({ typ: c.type, betrag: c.amount, schluessel: c.method, umlagefaehig: c.umlagefaehig })),
     einheiten: st.units.map((u) => ({ einheit: u.label, umgelegt: u.allocated, vorauszahlung: u.prepayment, saldo: u.balance })),
   };
@@ -137,7 +144,15 @@ export async function explainStatement(_p: AssistantState, fd: FormData): Promis
   try {
     const answer = await askAssistant(
       JSON.stringify(ctx),
-      "Erkläre diese Betriebskostenabrechnung einem Mieter in einfachen, freundlichen Worten: was wurde nach welchem Schlüssel umgelegt, und wie kommt der Saldo je Einheit zustande. Kurz und verständlich.",
+      // HAVEWA-05A-Fix: heizModus beachten — bei NONE/AREA_FALLBACK/MIXED
+      // darf KEIN pauschaler 30/70-Split behauptet werden, der effektive
+      // Modus (ctx.heizModus) bestimmt die Erklärung.
+      `Erkläre diese Betriebskostenabrechnung einem Mieter in einfachen, freundlichen Worten: ` +
+      `was wurde nach welchem Schlüssel umgelegt, und wie kommt der Saldo je Einheit zustande. ` +
+      `Heiz-/Warmwasserkosten: beachte strikt den effektiven Modus "heizModus" aus dem Kontext ` +
+      `(NONE = keine Heizkosten; METER = 30/70 nach HeizkostenV; AREA_FALLBACK = nur Fläche; ` +
+      `MIXED = positionsweise). Behaupte keinen 30/70-Split, wenn heizModus nicht METER ist. ` +
+      `Kurz und verständlich.`,
       aiCfg,
     );
     return { answer, configured: true };

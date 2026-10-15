@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { money } from "@/lib/format";
 import { computeStatement } from "@/server/statements";
+import { selectAdminHeatingHint } from "@/lib/allocation/statement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -148,9 +149,31 @@ export default async function StatementsPage({
       {/* Ergebnis */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <div>
+          <div className="space-y-1">
             <CardTitle className="text-base">{t("statements.result")}</CardTitle>
             <p className="text-xs text-muted-foreground">{t("statements.hint")}</p>
+            {/* HAVEWA-05A-Fix: Heizhinweis ausschließlich modusabhängig
+                (B-1: kein unbedingter 30/70-Hinweis mehr). NONE → kein Heiztext.
+                Quelle: selectAdminHeatingHint → statements.heatingHint*. */}
+            {st?.heatingAllocation?.mode && (() => {
+              const key = selectAdminHeatingHint(t, st.heatingAllocation!.mode);
+              return key ? (
+                <p className="text-xs text-muted-foreground">{t(key)}</p>
+              ) : null;
+            })()}
+            {/* HAVEWA-05A: effektiver Heating-Modus aus heatingAllocation, statt
+                pauschaler 30/70-Hinweis. NONE → kein Badge. */}
+            {st?.heatingAllocation && st.heatingAllocation.mode !== "NONE" && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Badge
+                  variant={st.heatingAllocation.mode === "AREA_FALLBACK" ? "outline" : "secondary"}
+                >
+                  {st.heatingAllocation.mode === "METER" && t("statements.heatingBadgeMeter")}
+                  {st.heatingAllocation.mode === "AREA_FALLBACK" && t("statements.heatingBadgeFallback")}
+                  {st.heatingAllocation.mode === "MIXED" && t("statements.heatingBadgeMixed")}
+                </Badge>
+              </div>
+            )}
           </div>
           {propertyId && lines.length > 0 && (
             <div className="flex flex-wrap gap-2">

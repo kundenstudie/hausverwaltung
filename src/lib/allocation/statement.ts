@@ -77,6 +77,114 @@ function participants(units: UnitInput[]): AllocationParticipant[] {
 }
 
 /**
+ * Effektive Verteilungsbasis einer Heiz-/Warmwasser-Kostenposition.
+ *
+ * - METER: consumptionShare>0, Verbrauchsdaten im scope vorhanden → Grundkosten
+ *   nach Fläche + Verbrauchskosten nach Zähler (klassischer HeizkostenV-Split).
+ * - AREA_FALLBACK: Heizposition mit method=CONSUMPTION, aber keine Verbrauchs-
+ *   daten im scope → die Position wird nach Fläche umgelegt.
+ * - NONE: keine relevante Heizposition.
+ */
+export type HeatingCostMode = "METER" | "AREA_FALLBACK";
+
+/**
+ * Statement-weite Zusammenfassung der tatsächlich verwendeten Heating-Verteilung.
+ *
+ * - NONE: keine relevanten Heiz-/Warmwasserpositionen.
+ * - METER: alle relevanten Heizpositionen konnten meter-/verbrauchsbasiert
+ *   verarbeitet werden.
+ * - AREA_FALLBACK: relevante CONSUMPTION-Heizpositionen mussten wegen
+ *   fehlendem Verbrauch auf Fläche zurückfallen.
+ * - MIXED: innerhalb desselben Statements existieren sowohl meterbasierte als
+ *   auch AREA-Fallback-Heizpositionen.
+ *
+ * `relevantCosts` zählt alle Heizpositionen, die im Statement berücksichtigt
+ * werden. `meterCosts` und `fallbackCosts` disaggregieren für UI/Reporting.
+ */
+export interface HeatingAllocation {
+  mode: "NONE" | "METER" | "AREA_FALLBACK" | "MIXED";
+  /** Anzahl umlagefähiger Heiz-/Warmwasserpositionen mit consumption>0 im scope. */
+  meterCosts: number;
+  /** Anzahl umlagefähiger Heiz-/Warmwasserpositionen mit method=CONSUMPTION
+   *  und consumption<=0 im scope (effektiv Flächenverteilung). */
+  fallbackCosts: number;
+  /** Summe aus meterCosts + fallbackCosts (Heizpositionen, die Anzeige
+   *  beeinflussen). Andere Heating-Methoden (z. B. method=AREA) sind hier
+   *  ausdrücklich NICHT enthalten, weil sie kein Fallback sind. */
+  relevantCosts: number;
+}
+
+/**
+ * Leitet den effektiven Heating-Modus aus den tatsächlich verarbeiteten
+ * Heiz-/Warmwasserkostenpositionen ab. Wird sowohl für die UI-Anzeige als
+ * auch für E-Mail-/PDF- und AI-Kontext verwendet.
+ *
+ * Wichtig: Die Metadaten folgen dem **effektiven** Pfad, den `buildStatement`
+ * wählt — nicht nur `cost.method`. `buildStatement` splittet 30/70 immer dann,
+ * wenn `cost.heating && totalConsumption > 0` ist, unabhängig von `method`.
+ * Daher klassifizieren wir:
+ * - `method=CONSUMPTION` + Verbrauch vorhanden → meter
+ * - `method=CONSUMPTION` + kein Verbrauch      → fallback
+ * - `method!=CONSUMPTION` + Verbrauch vorhanden → meter (effektiv 30/70)
+ * - `method!=CONSUMPTION` + kein Verbrauch      → ignorieren (bewusst gewählter
+ *   Schlüssel ohne Fallback-Bedeutung).
+ */
+export function deriveHeatingAllocation(units: UnitInput[], costs: CostInput[]): HeatingAllocation {
+  let meterCosts = 0;
+  let fallbackCosts = 0;
+  for (const cost of costs) {
+    if (!cost.heating || !cost.umlagefaehig || cost.amount <= 0) continue;
+    const scope = cost.unitIds ? units.filter((u) => cost.unitIds!.includes(u.id)) : units;
+    if (scope.length === 0) continue;
+    const totalConsumption = scope.reduce((a, u) => a + (u.consumption ?? 0), 0);
+    if (cost.method === "CONSUMPTION") {
+      if (totalConsumption > 0) meterCosts++;
+      else fallbackCosts++;
+    } else {
+      // method=AREA|UNITS|PERSONS|MEA|CUSTOM + heating + Verbrauchsdaten:
+      // buildStatement splittet 30/70 (HeizkostenV). Metadaten müssen folgen.
+      if (totalConsumption > 0) meterCosts++;
+      // Sonst: bewusst gewählter Schlüssel ohne Verbrauchsdaten → nicht zählen.
+    }
+  }
+  const total = meterCosts + fallbackCosts;
+  let mode: HeatingAllocation["mode"];
+  if (total === 0) mode = "NONE";
+  else if (meterCosts > 0 && fallbackCosts === 0) mode = "METER";
+  else if (meterCosts === 0 && fallbackCosts > 0) mode = "AREA_FALLBACK";
+  else mode = "MIXED";
+  return { mode, meterCosts, fallbackCosts, relevantCosts: total };
+}
+
+/**
+ * Selektor für den Admin-UI-Heizhinweis (Ergebnis-Card-Header). Reine Funktion,
+ * damit sie ohne React/Next testbar ist. Liefert den next-intl-Schlüssel, der
+ * in der Admin-UI als Hinweiszeile gerendert werden soll, oder `null`, wenn
+ * kein Hinweis erscheinen soll.
+ *
+ * - NONE           → null (kein Heizhinweis)
+ * - METER          → statements.heatingHintMeter (30/70)
+ * - AREA_FALLBACK  → statements.heatingHintFallback (nur Fläche)
+ * - MIXED          → statements.heatingHintMixed (positionsweise)
+ */
+export function selectAdminHeatingHint(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _t: (key: string) => any,
+  mode: HeatingAllocation["mode"],
+): string | null {
+  switch (mode) {
+    case "METER":
+      return "statements.heatingHintMeter";
+    case "AREA_FALLBACK":
+      return "statements.heatingHintFallback";
+    case "MIXED":
+      return "statements.heatingHintMixed";
+    default:
+      return null;
+  }
+}
+
+/**
  * Betriebskostenabrechnung: legt jede umlagefähige Kostenposition per
  * Verteilerschlüssel auf die Einheiten um, summiert und verrechnet mit
  * der Vorauszahlung.
@@ -161,5 +269,5 @@ export function buildStatement(units: UnitInput[], costs: CostInput[]) {
     }
   }
 
-  return { lines, totalUmlage: round(totalUmlage) };
+  return { lines, totalUmlage: round(totalUmlage), heatingAllocation: deriveHeatingAllocation(units, costs) };
 }

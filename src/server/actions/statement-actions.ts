@@ -61,6 +61,24 @@ export async function emailStatementToTenants(_p: ActionState, fd: FormData): Pr
   const propName = st.property?.name ?? "";
   let created = 0;
 
+  // HAVEWA-05A: Heating-Hinweis aus dem effektiven heatingAllocation ableiten,
+  // nicht pauschal 30/70. NONE → kein Hinweis, METER → HeizkostenV-Split,
+  // AREA_FALLBACK / MIXED → passender neutraler Text (deutsch in der PDF,
+  // weil die PDF-Texte aktuell nur deutsch vorliegen — UI/i18n-Trennung
+  // wird in 05B+ geprüft).
+  const heatingLine = (() => {
+    switch (st.heatingAllocation?.mode) {
+      case "METER":
+        return "Heiz-/Warmwasserkosten nach HeizkostenV (30% Flaeche / 70% Verbrauch).";
+      case "AREA_FALLBACK":
+        return "Heiz-/Warmwasserkosten: Verteilung nach Wohnflaeche (keine Verbrauchsdaten verfuegbar).";
+      case "MIXED":
+        return "Heiz-/Warmwasserkosten: positionsweise Verteilung (Verbrauch, soweit vorhanden; sonst Flaeche).";
+      default:
+        return null;
+    }
+  })();
+
   for (const u of st.units) {
     if (u.renterEmails.length === 0) continue;
     const kind = u.balance >= 0 ? "Guthaben" : "Nachzahlung";
@@ -73,15 +91,17 @@ export async function emailStatementToTenants(_p: ActionState, fd: FormData): Pr
       `Mit freundlichen Grüßen\n${st.property?.tenantName ?? ""}`;
 
     // PDF erzeugen, im Storage ablegen und als Dokument (Kategorie ABRECHNUNG) archivieren.
-    const pdf = simplePdf(`Betriebskostenabrechnung ${year}`, [
+    // Heating-Hinweis nur, wenn tatsächlich eine Heizposition existiert.
+    const pdfLines = [
       `${propName} - ${u.label}`,
       "",
       `Umgelegte Kosten: ${money(u.allocated)}`,
       `Vorauszahlungen:  ${money(u.prepayment)}`,
       `Ergebnis: ${money(Math.abs(u.balance))} ${kind}`,
       "",
-      "Heiz-/Warmwasserkosten nach HeizkostenV (30% Flaeche / 70% Verbrauch).",
-    ]);
+      ...(heatingLine ? [heatingLine] : []),
+    ];
+    const pdf = simplePdf(`Betriebskostenabrechnung ${year}`, pdfLines);
     const name = `Abrechnung ${year} - ${u.label}.pdf`;
     const storageKey = await saveFile(pdf, name);
     const doc = await prisma.document.create({

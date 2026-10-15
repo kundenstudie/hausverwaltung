@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { buildStatement, monthsActiveInYear, type UnitInput, type CostInput } from "@/lib/allocation/statement";
+import { buildStatement, monthsActiveInYear, type UnitInput, type CostInput, type HeatingAllocation } from "@/lib/allocation/statement";
 import { extrapolateConsumption } from "@/lib/allocation/heating-degree-days";
 import type { AllocationMethod } from "@/lib/allocation";
 
@@ -33,6 +33,9 @@ export interface StatementResult {
   costs: { id: string; type: string; amount: number; method: string; umlagefaehig: boolean; note: string | null; subcommunityId: string | null }[];
   units: StatementUnit[];
   totalUmlage: number;
+  /** Effektive Heating-Verteilung (HAVEWA-05A) — geteilte Basis für Admin-UI,
+   *  Druckansicht, E-Mail-PDF und AI-Kontext. */
+  heatingAllocation: HeatingAllocation;
 }
 
 /**
@@ -111,7 +114,7 @@ export async function computeStatement(
     };
   });
 
-  const { lines, totalUmlage } = buildStatement(inputs, costInputs);
+  const { lines, totalUmlage, heatingAllocation } = buildStatement(inputs, costInputs);
 
   // Nachschlage-Tabellen: Lease → Mieter, Einheit → Vertragsanzahl (für Label).
   const leaseById = new Map(dbUnits.flatMap((u) => u.leases.map((l) => [l.id, l] as const)));
@@ -149,5 +152,6 @@ export async function computeStatement(
     })),
     units,
     totalUmlage,
+    heatingAllocation,
   };
 }

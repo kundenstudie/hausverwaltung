@@ -66,7 +66,13 @@ export default async function PrintStatementPage({
         </tfoot>
       </table>
 
-      <p className="mt-8 text-xs text-neutral-500">{t("print.heatingNote")}</p>
+      <p className="mt-8 text-xs text-neutral-500">
+        {/* HAVEWA-05A: pauschalen 30/70-Hinweis nur bei METER rendern.
+            AREA_FALLBACK / MIXED bekommen einen passenden, neutralen Text. */}
+        {st.heatingAllocation?.mode === "METER" && t("print.heatingNote")}
+        {st.heatingAllocation?.mode === "AREA_FALLBACK" && t("print.heatingNoteFallback")}
+        {st.heatingAllocation?.mode === "MIXED" && t("print.heatingNoteMixed")}
+      </p>
     </div>
   );
 }
