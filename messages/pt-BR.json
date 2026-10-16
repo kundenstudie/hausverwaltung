@@ -841,7 +841,8 @@
     "mailed": "Rascunhos do demonstrativo criados na caixa de saída.",
     "explain": "IA: explicar demonstrativo",
     "explaining": "Explicando…",
-    "explainHint": "Sem ANTHROPIC_API_KEY, apenas um resumo curto é exibido."
+    "explainHint": "Sem ANTHROPIC_API_KEY, apenas um resumo curto é exibido.",
+    "reconciliationVacancy": "Vacância / parte do proprietário (proporcional ao tempo)"
   },
   "costType": {
     "GRUNDSTEUER": "Imposto predial",

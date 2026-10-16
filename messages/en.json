@@ -841,7 +841,8 @@
     "mailed": "Statement drafts created in the outbox.",
     "explain": "AI: explain statement",
     "explaining": "Explaining…",
-    "explainHint": "Without ANTHROPIC_API_KEY only a short summary is shown."
+    "explainHint": "Without ANTHROPIC_API_KEY only a short summary is shown.",
+    "reconciliationVacancy": "Vacancy / landlord share (time-proportional)"
   },
   "costType": {
     "GRUNDSTEUER": "Property tax",

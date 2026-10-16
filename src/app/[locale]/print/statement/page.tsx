@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/rbac";
 import { money } from "@/lib/format";
 import { computeStatement } from "@/server/statements";
+import { STATEMENT_VACANCY_ID } from "@/lib/allocation/statement";
 import { PrintButton } from "@/components/print-button";
 
 // Druckbare Betriebskostenabrechnung (eigenes, minimales Layout).
@@ -48,7 +49,9 @@ export default async function PrintStatementPage({
         <tbody>
           {st.units.map((l) => (
             <tr key={l.key} className="border-b border-neutral-300">
-              <td className="py-1">{l.label}</td>
+              {/* HAVEWA-05B-1 (V-1): Reconciliation-Zeile lokalisiert rendern
+                  (messages/de.json statements.reconciliationVacancy). */}
+              <td className="py-1">{l.id === STATEMENT_VACANCY_ID ? t("statements.reconciliationVacancy") : l.label}</td>
               <td className="py-1 text-right">{money(l.allocated, locale)}</td>
               <td className="py-1 text-right">{money(l.prepayment, locale)}</td>
               <td className="py-1 text-right font-medium">

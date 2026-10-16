@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { money } from "@/lib/format";
 import { computeStatement } from "@/server/statements";
-import { selectAdminHeatingHint } from "@/lib/allocation/statement";
+import { selectAdminHeatingHint, STATEMENT_VACANCY_ID } from "@/lib/allocation/statement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -198,7 +198,11 @@ export default async function StatementsPage({
               <TableBody>
                 {lines.map((l) => (
                   <TableRow key={l.key}>
-                    <TableCell className="font-medium">{l.label}</TableCell>
+                    <TableCell className="font-medium">
+                      {/* HAVEWA-05B-1 (V-1): Reconciliation-Zeile lokalisiert
+                          rendern (siehe messages/de.json statements.reconciliationVacancy). */}
+                      {l.id === STATEMENT_VACANCY_ID ? t("statements.reconciliationVacancy") : l.label}
+                    </TableCell>
                     <TableCell className="text-right">{money(l.allocated, locale)}</TableCell>
                     <TableCell className="text-right">{money(l.prepayment, locale)}</TableCell>
                     <TableCell className="text-right">

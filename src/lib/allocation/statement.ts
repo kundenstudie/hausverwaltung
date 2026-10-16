@@ -5,6 +5,20 @@ import { allocate, type AllocationMethod, type AllocationParticipant } from "./i
 export const HEATING_CONSUMPTION_SHARE = 0.7;
 
 /**
+ * Domänen-lokaler Identifier für die Vermieter-/Reconciliation-Zeile im
+ * Statement. Bewusst NICHT identisch mit `VACANCY_ID` aus `area-time.ts`
+ * (`"__vacancy__"`), um Cross-Domain-Key-Kollisionen in Tabellen und UI zu
+ * vermeiden.
+ *
+ * HAVEWA-05B-1: Die Reconciliation-Zeile wird angehängt, wenn die sichtbare
+ * Summe der Statement-Zeilen nicht cent-genau == totalUmlage ist
+ * (positiver Residual = zeitanteiliger Leerstand / Vermieteranteil). Sie ist
+ * kein echter Lease (`leaseId = null`), nicht buchungsfähig und nicht
+ * mailbar.
+ */
+export const STATEMENT_VACANCY_ID = "__statement_vacancy__";
+
+/**
  * Anzahl Kalendermonate des Jahres `year`, in denen ein Mietverhältnis aktiv ist.
  * Grundlage für die anteilige Vorauszahlung bei unterjährigem Miet-Beginn/-Ende
  * (sonst würde immer mit 12 Monaten gerechnet).
@@ -267,6 +281,27 @@ export function buildStatement(units: UnitInput[], costs: CostInput[]) {
         balance: round(lease.prepayment - allocated),
       });
     }
+  }
+
+  // HAVEWA-05B-1 (V-1 Reconciliation): wenn die sichtbare Summe der
+  // Mieter-/Leerstands-Zeilen den ausgewiesenen Gesamtbetrag (totalUmlage)
+  // nicht cent-genau erreicht, wird eine zusätzliche Reconciliation-Zeile
+  // ("Leerstand / Vermieteranteil (zeitanteilig)") angehängt. Berechnung in
+  // Integer-Cent; Guard: residualCents <= 0 → keine Zeile.
+  //
+  // V-2 (Verbrauchs-Vakanz bei unterjähriger Lease) bleibt deferred.
+  const totalCents = Math.round(totalUmlage * 100);
+  const allocatedCents = lines.reduce((a, l) => a + Math.round(l.allocated * 100), 0);
+  const residualCents = totalCents - allocatedCents;
+  if (residualCents > 0) {
+    lines.push({
+      unitId: STATEMENT_VACANCY_ID,
+      leaseId: null,
+      label: STATEMENT_VACANCY_ID, // UI/Print ersetzt das Label durch Lokalisierung.
+      allocated: residualCents / 100,
+      prepayment: 0,
+      balance: -(residualCents / 100),
+    });
   }
 
   return { lines, totalUmlage: round(totalUmlage), heatingAllocation: deriveHeatingAllocation(units, costs) };

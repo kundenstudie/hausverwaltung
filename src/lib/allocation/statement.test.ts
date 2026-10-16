@@ -143,14 +143,26 @@ describe("buildStatement", () => {
       expect(lines[0].allocated).toBe(850); // 300*0.5 + 700
     });
 
-    it("kein Vertrag (Leerstand) → eine Zeile, nichts umgelegt", () => {
-      const { lines } = buildStatement(
+    it("kein Vertrag (Leerstand) → Leerstands-Zeile mit 0, Reconciliation-Zeile trägt den Residual", () => {
+      // HAVEWA-05B-1 (V-1): Residual zwischen sichtbarer Summe und
+      // totalUmlage wird jetzt explizit als Reconciliation-Zeile ausgewiesen.
+      // 1200 € totalUmlage, keine Lease → zugewiesen 0 € → Recon 1200 €.
+      const { lines, totalUmlage } = buildStatement(
         [{ id: "a", label: "A", area: 50, persons: 1, leases: [] }],
         [{ id: "c1", amount: 1200, method: "AREA", umlagefaehig: true }],
       );
-      expect(lines).toHaveLength(1);
-      expect(lines[0].leaseId).toBeNull();
-      expect(lines[0].allocated).toBe(0);
+      expect(totalUmlage).toBe(1200);
+      // Leerstands-Zeile für die Einheit (allocated=0) + Reconciliation-Zeile.
+      const tenant = lines.find((l) => l.leaseId === null && l.unitId === "a");
+      expect(tenant).toBeDefined();
+      expect(tenant!.allocated).toBe(0);
+      const recon = lines.find((l) => l.unitId === "__statement_vacancy__");
+      expect(recon).toBeDefined();
+      expect(recon!.leaseId).toBeNull();
+      expect(recon!.allocated).toBe(1200);
+      // Cent-Invariant.
+      const sum = lines.reduce((a, l) => a + l.allocated, 0);
+      expect(Math.round(sum * 100) / 100).toBe(1200);
     });
   });
 

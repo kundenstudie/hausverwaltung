@@ -841,7 +841,8 @@
     "mailed": "Abrechnungs-Entwürfe im Postausgang erstellt.",
     "explain": "KI: Abrechnung erklären",
     "explaining": "Erkläre…",
-    "explainHint": "Ohne ANTHROPIC_API_KEY wird nur eine Kurzfassung gezeigt."
+    "explainHint": "Ohne ANTHROPIC_API_KEY wird nur eine Kurzfassung gezeigt.",
+    "reconciliationVacancy": "Leerstand / Vermieteranteil (zeitanteilig)"
   },
   "costType": {
     "GRUNDSTEUER": "Grundsteuer",

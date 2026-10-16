@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { buildStatement, monthsActiveInYear, type UnitInput, type CostInput, type HeatingAllocation } from "@/lib/allocation/statement";
+import { buildStatement, monthsActiveInYear, STATEMENT_VACANCY_ID, type UnitInput, type CostInput, type HeatingAllocation } from "@/lib/allocation/statement";
 import { extrapolateConsumption } from "@/lib/allocation/heating-degree-days";
 import type { AllocationMethod } from "@/lib/allocation";
 
@@ -122,6 +122,24 @@ export async function computeStatement(
   const unitLabelById = new Map(dbUnits.map((u) => [u.id, u.label] as const));
 
   const units: StatementUnit[] = lines.map((line) => {
+    // HAVEWA-05B-1 (V-1): Reconciliation-Zeile ist keine echte Einheit —
+    // `leaseId = null`, `unitId = STATEMENT_VACANCY_ID`, `label = ""` (UI/Print
+    // setzt den lokalisierten Text). Sie ist nicht buchungsfähig und nicht
+    // mailbar — bestehende Pfade (statement-actions) überspringen sie bereits
+    // wegen `leaseId = null`.
+    if (line.unitId === STATEMENT_VACANCY_ID) {
+      return {
+        key: STATEMENT_VACANCY_ID,
+        id: STATEMENT_VACANCY_ID,
+        label: "",
+        leaseId: null,
+        renterEmails: [],
+        renterNames: [],
+        allocated: line.allocated,
+        prepayment: 0,
+        balance: line.balance,
+      };
+    }
     const lease = line.leaseId ? leaseById.get(line.leaseId) : undefined;
     const renters = lease?.renters ?? [];
     const names = renters.map((r) => `${r.person.firstName} ${r.person.lastName}`);
