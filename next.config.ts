@@ -30,6 +30,11 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: { bodySizeLimit: "25mb" },
   },
+  // Standalone-Build nur per ENV aktivieren (HAVEWA-07A-1). Default-Verhalten
+  // ohne ENV ist unveraendert (kein output-Key).
+  ...(process.env.NEXT_OUTPUT_STANDALONE === "1"
+    ? { output: "standalone" as const }
+    : {}),
 };
 
 export default withNextIntl(nextConfig);
