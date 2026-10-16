@@ -8,19 +8,67 @@ import { money } from "@/lib/format";
 import { simplePdf } from "@/lib/pdf";
 import { saveFile } from "@/lib/storage";
 import { computeStatement } from "@/server/statements";
+import { getTranslations, getLocale } from "next-intl/server";
+import {
+  buildStatementMailTexts,
+  resolveStatementLocale,
+  type StatementMailTexts,
+} from "./statement-mail-texts";
 import type { ActionState } from "@/lib/schemas";
 
+/**
+ * HAVEWA-05B-2: Server-Action-Signatur erweitert um `locale` (FormData-Feld).
+ *
+ * Locale-Quelle (C1): `locale` aus dem FormData, NICHT `session.user.locale`
+ * (LanguageSwitcher aktualisiert User.locale nicht zuverlässig) und NICHT
+ * `getLocale()` (in Server Actions unzuverlässig).
+ *
+ * `getLocale()` wird hier nur als RÜCKFALL benutzt, wenn der Caller kein
+ * `locale`-Feld mitgibt (z. B. alter Client-Code, externe Test-Aufrufer). In
+ * diesem Fall wird der aufgelöste Wert gegen routing.locales validiert (C6)
+ * und fällt im Zweifel auf `de` zurück.
+ *
+ * `NK-Nachzahlung {year}` (charge.description + Dedup-Key) bleibt
+ * unverändert deutsch (C3) — Locale-Wechsel darf keine Dubletten erzeugen.
+ */
 function parse(fd: FormData) {
-  return { propertyId: String(fd.get("propertyId") ?? ""), year: Number(fd.get("year")) || new Date().getFullYear() };
+  return {
+    propertyId: String(fd.get("propertyId") ?? ""),
+    year: Number(fd.get("year")) || new Date().getFullYear(),
+    locale: String(fd.get("locale") ?? ""),
+  };
+}
+
+/**
+ * Löst die aktive Locale in der dokumentierten Priorität auf:
+ *   1. explizites `locale`-Feld (Caller-Kontext, z. B. UI)
+ *   2. getLocale() (Request-Kontext, fallback)
+ *   3. routing.defaultLocale (= "de")
+ *
+ * Validierung gegen routing.locales übernimmt resolveStatementLocale.
+ */
+async function resolveActionLocale(fd: FormData): Promise<string> {
+  const explicit = String(fd.get("locale") ?? "").trim();
+  if (explicit) return explicit;
+  try {
+    return await getLocale();
+  } catch {
+    return "de";
+  }
 }
 
 /** Bucht die Nachzahlungen (Saldo < 0) je Einheit als Sollstellung. */
 export async function bookStatementCharges(_p: ActionState, fd: FormData): Promise<ActionState> {
   const user = await requireWriter();
   const { propertyId, year } = parse(fd);
-  if (!propertyId) return { error: "Kein Objekt" };
+  if (!propertyId) {
+    const locale = resolveStatementLocale(await resolveActionLocale(fd));
+    const t = await getTranslations({ locale });
+    return { error: t("statements.errors.errorNoProperty") };
+  }
 
   const st = await computeStatement(user.tenantId, propertyId, year);
+  // C3: description bleibt unverändert deutsch (Dedup-Key, Audit-Reproduzierbarkeit).
   const desc = `NK-Nachzahlung ${year}`;
   const dueDate = new Date(Date.now() + 30 * 864e5);
   let created = 0;
@@ -46,69 +94,75 @@ export async function bookStatementCharges(_p: ActionState, fd: FormData): Promi
     });
     created++;
   }
-  if (created > 0) await audit(user, "CREATE", "Charge", null, `${created}× ${desc}`);
+  if (created > 0) await audit(user, "CREATE", "Charge", null, `${created}× ${desc}`); // C3/Audit
   revalidatePath("/", "layout");
-  return created > 0 ? { ok: true } : { error: "Keine offenen Nachzahlungen zu buchen." };
+  if (created > 0) return { ok: true };
+  const locale = resolveStatementLocale(await resolveActionLocale(fd));
+  const t = await getTranslations({ locale });
+  return { error: t("statements.errors.errorNoOpenArrears") };
 }
 
 /** Erstellt je Einheit mit Mieter-E-Mail einen Abrechnungs-Entwurf im Postausgang. */
 export async function emailStatementToTenants(_p: ActionState, fd: FormData): Promise<ActionState> {
   const user = await requireWriter();
   const { propertyId, year } = parse(fd);
-  if (!propertyId) return { error: "Kein Objekt" };
+  if (!propertyId) {
+    const locale = resolveStatementLocale(await resolveActionLocale(fd));
+    const t = await getTranslations({ locale });
+    return { error: t("statements.errors.errorNoProperty") };
+  }
+
+  // resolveActionLocale: 1) explizites FormData-Feld, 2) getLocale() Fallback, 3) "de"
+  const requestedLocale = await resolveActionLocale(fd);
+  const locale = resolveStatementLocale(requestedLocale);
+  const t = await getTranslations({ locale });
 
   const st = await computeStatement(user.tenantId, propertyId, year);
   const propName = st.property?.name ?? "";
   let created = 0;
 
-  // HAVEWA-05A: Heating-Hinweis aus dem effektiven heatingAllocation ableiten,
-  // nicht pauschal 30/70. NONE → kein Hinweis, METER → HeizkostenV-Split,
-  // AREA_FALLBACK / MIXED → passender neutraler Text (deutsch in der PDF,
-  // weil die PDF-Texte aktuell nur deutsch vorliegen — UI/i18n-Trennung
-  // wird in 05B+ geprüft).
-  const heatingLine = (() => {
-    switch (st.heatingAllocation?.mode) {
-      case "METER":
-        return "Heiz-/Warmwasserkosten nach HeizkostenV (30% Flaeche / 70% Verbrauch).";
-      case "AREA_FALLBACK":
-        return "Heiz-/Warmwasserkosten: Verteilung nach Wohnflaeche (keine Verbrauchsdaten verfuegbar).";
-      case "MIXED":
-        return "Heiz-/Warmwasserkosten: positionsweise Verteilung (Verbrauch, soweit vorhanden; sonst Flaeche).";
-      default:
-        return null;
-    }
-  })();
-
   for (const u of st.units) {
     if (u.renterEmails.length === 0) continue;
-    const kind = u.balance >= 0 ? "Guthaben" : "Nachzahlung";
+    const texts: StatementMailTexts = buildStatementMailTexts(
+      locale,
+      st.property?.name ?? "",
+      u.label,
+      year,
+      st.heatingAllocation?.mode ?? "NONE",
+    );
+
+    const balanceAbs = money(Math.abs(u.balance), locale);
+    const kind = u.balance >= 0 ? t("statements.credit") : t("statements.arrears");
+
     const body =
-      `Sehr geehrte Mieterin, sehr geehrter Mieter,\n\n` +
-      `anbei die Betriebskostenabrechnung ${year} für ${propName}, ${u.label}.\n\n` +
-      `Umgelegte Kosten: ${money(u.allocated)}\n` +
-      `Vorauszahlungen: ${money(u.prepayment)}\n` +
-      `Ergebnis: ${money(Math.abs(u.balance))} ${kind}\n\n` +
-      `Mit freundlichen Grüßen\n${st.property?.tenantName ?? ""}`;
+      `${texts.greeting}\n\n` +
+      `${texts.bodyIntro}\n\n` +
+      `${texts.bodyLabels.allocated}: ${money(u.allocated, locale)}\n` +
+      `${texts.bodyLabels.prepayment}: ${money(u.prepayment, locale)}\n` +
+      `${texts.resultLabel}: ${balanceAbs} ${kind}\n\n` +
+      `${texts.closing}\n${st.property?.tenantName ?? ""}`;
+
+    // Heating-Hinweis nur, wenn die zugehörige i18n-Key gesetzt ist.
+    // Lookup passiert im Helper (kein doppelter Production-Selektor hier).
+    const heatingLine: string | null = texts.heatingLineKey ? t(texts.heatingLineKey) : null;
 
     // PDF erzeugen, im Storage ablegen und als Dokument (Kategorie ABRECHNUNG) archivieren.
-    // Heating-Hinweis nur, wenn tatsächlich eine Heizposition existiert.
     const pdfLines = [
       `${propName} - ${u.label}`,
       "",
-      `Umgelegte Kosten: ${money(u.allocated)}`,
-      `Vorauszahlungen:  ${money(u.prepayment)}`,
-      `Ergebnis: ${money(Math.abs(u.balance))} ${kind}`,
+      `${texts.bodyLabels.allocated}: ${money(u.allocated, locale)}`,
+      `${texts.bodyLabels.prepayment}:  ${money(u.prepayment, locale)}`,
+      `${texts.resultLabel}: ${balanceAbs} ${kind}`,
       "",
       ...(heatingLine ? [heatingLine] : []),
     ];
-    const pdf = simplePdf(`Betriebskostenabrechnung ${year}`, pdfLines);
-    const name = `Abrechnung ${year} - ${u.label}.pdf`;
-    const storageKey = await saveFile(pdf, name);
+    const pdf = simplePdf(texts.pdfTitle, pdfLines);
+    const storageKey = await saveFile(pdf, texts.filename);
     const doc = await prisma.document.create({
       data: {
         tenantId: user.tenantId,
         propertyId,
-        name,
+        name: texts.filename,
         category: "ABRECHNUNG",
         mime: "application/pdf",
         size: pdf.length,
@@ -120,7 +174,7 @@ export async function emailStatementToTenants(_p: ActionState, fd: FormData): Pr
       data: {
         tenantId: user.tenantId,
         toAddress: u.renterEmails.join(", "),
-        subject: `Betriebskostenabrechnung ${year} · ${u.label}`,
+        subject: texts.subject,
         body,
         status: "ENTWURF",
         attachments: { create: [{ documentId: doc.id }] },
@@ -130,5 +184,6 @@ export async function emailStatementToTenants(_p: ActionState, fd: FormData): Pr
   }
   if (created > 0) await audit(user, "CREATE", "EmailMessage", null, `${created}× Abrechnung ${year} (PDF)`);
   revalidatePath("/", "layout");
-  return created > 0 ? { ok: true } : { error: "Keine Mieter mit E-Mail-Adresse gefunden." };
+  if (created > 0) return { ok: true };
+  return { error: t("statements.errors.errorNoTenantsWithEmail") };
 }

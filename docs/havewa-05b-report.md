@@ -1,253 +1,317 @@
-# HAVEWA-05B-1 — Vacancy / Statement Reconciliation (Abschlussbericht)
+# HAVEWA-05B-2 — Statement PDF / E-Mail i18n (Abschlussbericht)
 
-Stand: 2026-10-16 · MODE BUILD · HEAD `1bd8a916baf5588f6e6488a0cb1efaec40e93d99`
+Stand: 2026-10-16 · MODE BUILD · HEAD `4ad7679fe17befe0c11b52e5f3d8bf4c6cb05254`
 
-Vorgänger: HAVEWA-05A = COMPLETE.
+Vorgänger: HAVEWA-05A = COMPLETE, HAVEWA-05B-1 = COMPLETE.
 
-> **Hinweis Review-Sicht:** `havewa-05b` ist die Tracking-ID für das Themenfeld "Statement-Sichtbarkeit bei Vakanz". `05B-1` behandelt ausschließlich V-1 (zeitanteilige Reconciliation). V-2 (Verbrauchs-Vakanz bei unterjähriger Lease) bleibt in `05B-2`/`05B-3` offen.
+> **Tracking-Klarstellung:** `havewa-05b` ist die Tracking-ID für das
+> Themenfeld "Statement-Sichtbarkeit". Die IDs innerhalb unterscheiden sich:
+>
+> - **HAVEWA-05B-1** = V-1 (zeitanteilige Reconciliation). **COMPLETE.** Bericht: `docs/havewa-05b-1-report.md`.
+> - **HAVEWA-05B-2** = **Statement PDF / E-Mail i18n (de / en / pt-BR).** ← dieser Bericht.
+> - **V-2** = Verbrauchs-Vakanz bei unterjähriger Lease (Gradtagszahl, Meter-Periode). **DEFERRED**, separat.
+>
+> Es darf keine Vermischung mit V-2 geben. Tracking-Konflikt aus älterer
+> Doku (in der "05B-2" zwischenzeitlich auch für V-2 verwendet wurde) ist
+> hiermit aufgelöst.
 
 ---
 
 ## 1. Ergebnis
 
-**HAVEWA-05B-1 = PASS (V-1 behoben).** Die sichtbare Statement-Summe reconciliiert jetzt cent-genau mit dem ausgewiesenen Gesamtbetrag (`totalUmlage`) — auch bei ganzjährigem oder zeitanteiligem Leerstand.
+**HAVEWA-05B-2 = PASS.** Die serverseitigen Statement-Mail- und PDF-Pfade sind
+vollständig internationalisiert (de / en / pt-BR). Die Sprache folgt dem
+auslösenden UI-/Request-Kontext des HaVeWa-Benutzers — **nicht** der
+Empfänger-Sprache. Empfänger-Locale (Person/tenant) bleibt **DEFERRED**.
 
-V-1 wird über eine zusätzliche, fachlich neutrale Statement-Zeile sichtbar gemacht:
+Sechs Review-Korrekturen geschlossen:
 
-> **Leerstand / Vermieteranteil (zeitanteilig)**
+| Kürzel | Inhalt | Status |
+|--------|--------|--------|
+| **C1** | Locale-Quelle = expliziter Caller-Parameter + `getLocale()`-Fallback (NICHT `session.user.locale`) | ✅ |
+| **C2** | Heating-Texte auf bestehende `print.heatingNote*`-Semantik konsolidiert | ✅ |
+| **C3** | `NK-Nachzahlung {year}` (charge.description + Dedup-Key) bleibt unverändert deutsch | ✅ |
+| **C4** | 3 sichtbare Action-Fehlertexte lokalisiert (über Message-Kataloge) | ✅ |
+| **C5** | Bestehender `money(value, locale)` verwendet, kein neuer Formatter | ✅ |
+| **C6** | Locale-Validierung gegen `routing.locales`, Fallback `de` | ✅ |
 
-Diese Zeile ist **kein** "pauschaler Leerstand" und **kein** "Vermieter zahlt X €". Sie ist eine reine, transparente Ausweisung des positiven Residuals zwischen zugewiesenen Kosten (Mieter + Leerstands-Einheit) und `totalUmlage`. Sie enthält:
+Zusätzlich:
 
-- zeitanteilige, keinem Lease zugewiesene Beträge (typisch: 4-Monate-Lücke bei Mieterwechsel)
-- Rundungsreste aus der Per-Zeile-Cent-Rundung
-
-Sie deckt **nicht** die V-2-Verbrauchs-Vakanz ab (siehe §6).
+- **T-1 geschlossen** — die duplizierte `heatingLineFor`-Test-Funktion in
+  `statement.heating-pdf.test.ts` wurde durch den **Production-Selektor**
+  `selectStatementHeatingLineKey` ersetzt; Tests prüfen jetzt die echte
+  Produktionslogik.
+- **Reiner Text-Helper** `buildStatementMailTexts(...)` ist deterministisch
+  aus `locale` + `propName` + `unitLabel` + `year` + `heatingMode` und führt
+  **keine** DB/Session/Request-Lookups durch.
+- **Eine Wahrheitsquelle pro sichtbarem Text:** Sichtbare Fehlertexte
+  (`statements.errors.*`) und Guthaben/Nachzahlung-Wörter
+  (`statements.credit`/`statements.arrears`) liegen ausschließlich in den
+  `messages/*.json`-Katalogen. Der Helper hält für sie keine Duplikate mehr.
 
 ---
 
 ## 2. Architektur / Semantik
 
-### 2.1 Identifier
+### 2.1 Lokalisierte Statement-Texte (Helper)
 
 ```ts
-// src/lib/allocation/statement.ts
-export const STATEMENT_VACANCY_ID = "__statement_vacancy__";
+// src/server/actions/statement-mail-texts.ts
+buildStatementMailTexts(
+  locale: string,
+  propName: string,
+  unitLabel: string,
+  year: number,
+  heatingMode: HeatingMode,
+): StatementMailTexts
 ```
 
-Bewusst domänen-lokal. **Nicht** identisch mit `VACANCY_ID` aus `area-time.ts` (`"__vacancy__"`), um Cross-Domain-Key-Kollisionen in Tabellen und UI zu vermeiden (Flächenmodell vs. Statement sind zwei getrennte Domänen, die zufällig denselben Begriff treffen).
+Der Helper liefert ein typisiertes Textobjekt **nur** für die Felder, die im
+Statement-Mail/PDF-Action-Pfad tatsächlich aus ihm gelesen werden:
 
-### 2.2 Repräsentation
+| Feld | Quelle | Locale-spezifisch? |
+|------|--------|---------------------|
+| `locale` | aus Caller, validiert gegen `routing.locales` | ja |
+| `subject` | `Betriebskostenabrechnung {y} · {label}` / `Service charge statement …` / `Demonstrativo de encargos …` | ja |
+| `pdfTitle` | `Betriebskostenabrechnung {y}` / `Service charge statement {y}` / `Demonstrativo de encargos {y}` | ja |
+| `filename` | `Abrechnung {y} - {label}.pdf` / `Statement {y} - {label}.pdf` / `Demonstrativo {y} - {label}.pdf` | ja |
+| `greeting` | `Sehr geehrte Mieterin, …` / `Dear Tenant,` / `Prezado(a) inquilino(a),` | ja |
+| `bodyIntro` | lokalisierter Begleittext inkl. Year + Property + Unit | ja |
+| `bodyLabels.{allocated,prepayment}` | lokalisierte Labels | ja |
+| `resultLabel` | `Ergebnis` / `Result` / `Resultado` | ja |
+| `closing` | `Mit freundlichen Grüßen` / `Kind regards` / `Atenciosamente` | ja |
+| `heatingLineKey` | `print.heatingNote` / `print.heatingNoteFallback` / `print.heatingNoteMixed` / `null` (NONE) | ja (i18n-Key) |
 
-Die Reconciliation-Zeile ist eine **normale** `StatementLine` mit:
+**Eigenschaften (C7):**
 
-| Feld | Wert |
-|------|------|
-| `unitId` | `STATEMENT_VACANCY_ID` (`"__statement_vacancy__"`) |
-| `leaseId` | `null` |
-| `label` | im Server-Layer `""` (UI/Print lokalisiert) |
-| `allocated` | Residual in Integer-Cent ÷ 100 |
-| `prepayment` | `0` |
-| `balance` | `-allocated` (Vermieter trägt Residual) |
+- KEINE DB / Prisma / Fetch
+- KEIN `session.user.locale`
+- KEIN `getLocale()` (Caller-Parameter, NICHT Request-Kontext)
+- KEIN erfundener Heating-Modus
+- KEIN neuer Money-Formatter (`money(value, locale)` aus `@/lib/format`)
+- KEINE Audit-Text-Übersetzung
+- KEINE `charge.description`-Übersetzung (`NK-Nachzahlung {year}` bleibt, C3)
+- KEINE sichtbaren Action-Fehlertexte (liegen in `messages/*.json`,
+  `statements.errors.*`; eine Quelle pro Text)
+- KEINE Guthaben/Nachzahlung-Wörter (liegen in `messages/*.json`,
+  `statements.credit`/`statements.arrears`; eine Quelle pro Text)
+- KEINE `bodyResult`-Zeile im Helper — die Ergebnis-Zeile
+  (`<resultLabel>: <Betrag> <Art>`) wird im Action-Pfad aus
+  `t("statements.credit"|"statements.arrears")` und `money(value, locale)`
+  zusammengesetzt.
 
-`leaseId = null` ist die bestehende Vacancy-Semantik in `StatementLine`. Sie ist:
+### 2.2 Locale-Quelle (C1) + Validierung (C6)
 
-- **nicht buchungsfähig** — `statement-actions.bookStatementCharges` filtert mit `if (!u.leaseId || u.balance >= 0) continue;`
-- **nicht mailbar** — `statement-actions.emailStatementToTenants` filtert mit `if (u.renterEmails.length === 0) continue;` (die Reconciliation-Zeile hat `renterEmails: []`)
-- **kein echter Lease** — `key = STATEMENT_VACANCY_ID`, eindeutig in der Tabelle
+**Caller-Parameter-Pfad (bevorzugt):** Die Client-Component
+`src/components/statement-actions.tsx` liest `useLocale()` aus
+`next-intl` und reicht die Locale als zusätzliches Hidden-Field
+(`<input type="hidden" name="locale" value={locale} />`) in den
+beiden Forms durch. Die Server-Action `emailStatementToTenants` (und
+`bookStatementCharges`) lesen `fd.get("locale")` aus und validieren
+über `resolveStatementLocale` gegen `routing.locales`.
 
-`statement-actions.ts` wurde **nicht** geändert — das bestehende Verhalten ist bereits korrekt.
+**getLocale()-Fallback:** Nur wenn der Caller **kein** `locale`-Feld
+mitgibt (z. B. externe Tests, Legacy-Aufrufer) fällt die Action auf
+`await getLocale()` zurück. In der Praxis ist dies nie der Fall.
 
-### 2.3 Lokalisierung
+**Validierung:** Unbekannte, leere oder Whitespace-Werte ⇒ Fallback
+`routing.defaultLocale` (= `de`). Permissive Variante: `"DE"` und
+`"de"` werden beide akzeptiert, damit UI-Werte, die nicht streng
+lowercase normalisiert sind, nicht fälschlich auf `de` zurückfallen.
 
-Drei Locale-Keys neu angelegt, fachlich neutral:
-
-| Locale | Key | Wert |
-|--------|-----|------|
-| de | `statements.reconciliationVacancy` | Leerstand / Vermieteranteil (zeitanteilig) |
-| en | `statements.reconciliationVacancy` | Vacancy / landlord share (time-proportional) |
-| pt-BR | `statements.reconciliationVacancy` | Vacância / parte do proprietário (proporcional ao tempo) |
-
-UI (Admin Statement) und Print rendern das Label **lokalisiert**, wenn `l.id === STATEMENT_VACANCY_ID`.
-
----
-
-## 3. Residual-Berechnung (Integer-Cent, Guard)
+### 2.3 Heating-Selektor (C2)
 
 ```ts
-const totalCents = Math.round(totalUmlage * 100);
-const allocatedCents = lines.reduce((a, l) => a + Math.round(l.allocated * 100), 0);
-const residualCents = totalCents - allocatedCents;
-if (residualCents > 0) {
-  lines.push({
-    unitId: STATEMENT_VACANCY_ID,
-    leaseId: null,
-    label: STATEMENT_VACANCY_ID,
-    allocated: residualCents / 100,
-    prepayment: 0,
-    balance: -(residualCents / 100),
-  });
+// src/server/actions/statement-mail-texts.ts
+export function selectStatementHeatingLineKey(mode: HeatingMode): HeatingLineKey {
+  switch (mode) {
+    case "METER":         return "print.heatingNote";
+    case "AREA_FALLBACK": return "print.heatingNoteFallback";
+    case "MIXED":         return "print.heatingNoteMixed";
+    case "NONE":
+    default:              return null;
+  }
 }
 ```
 
-**Eigenschaften:**
+- **Eine** Quelle der Wahrheit — die Decision-Matrix steht nur hier.
+- **Kein** paralleler `statementMail.heating*`-Namespace, **keine**
+  dritte Heating-Matrix. Bestehende `print.heatingNote*`-Keys werden
+  wiederverwendet (C2); sie sind in `de.json`/`en.json`/`pt-BR.json`
+  bereits vorhanden.
+- NONE ⇒ `null` ⇒ keine Heating-Zeile in PDF/Mail.
 
-- **Integer-Cent-Arithmetik.** Kein Float-Residual. `Math.round(x * 100)` für `totalUmlage` und alle `lines.allocated`.
-- **Null/Negativ-Guard.** `residualCents <= 0` → keine zusätzliche Zeile. Insbesondere kein negativer "-0,01 € Leerstand"-Eintrag bei rechnerischem Übermaß (z. B. Doppelzuordnung).
-- **Kein neuer Money-/Allocation-Algorithmus.** `allocate()` (Largest-Remainder) bleibt unverändert. Die Recon-Zeile absorbiert nur den sichtbaren Rest, der nach Mieter- und Einheit-Leerstands-Zuordnung übrig bleibt.
+### 2.4 Money / Currency / Date (C5 + Date-Review)
 
----
+- **Money:** bestehender `money(value, locale)` aus `@/lib/format`.
+  Locale-aware, Currency bleibt **EUR**, kein neuer Formatter.
+- **Date:** keine echte i18n-Lücke im Statement-Mail/PDF-Pfad (nur
+  Year wird verwendet). Kein neuer Date-Formatter gebaut.
+- **Filename:** lokalisiert, aber **stabil** — kein Hash, kein
+  Timestamp. UI hat `label` bereits sanitiert.
 
-## 4. V-2 Boundary (deferred)
+### 2.5 Action-Pfad (C4)
 
-**Nicht gelöst** in `05B-1`:
+Drei sichtbare ActionState-Fehlertexte sind nun lokalisiert. Quelle ist
+ausschließlich `messages/*.json` (`statements.errors.*`); der Helper
+hält keine Duplikate:
 
-- Verbrauchsanteile (Heizung/Warmwasser) bei unterjährigem Lease, bei denen der Zähler die Gesamt-Nutzungszeit des Jahres abdeckt (z. B. Mietbeginn 01.07., Verbrauchszähler läuft seit 01.01.). Die aktuelle Implementierung ordnet dem vorhandenen Lease den vollen Verbrauch zu — V-2 würde eine Verbrauchsproration nach Monatsanteilen benötigen.
+| DE | EN | pt-BR |
+|----|----|-------|
+| `Kein Objekt` | `No property selected.` | `Nenhum imóvel selecionado.` |
+| `Keine offenen Nachzahlungen zu buchen.` | `No open arrears to book.` | `Nenhum débito em aberto para lançar.`
+| `Keine Mieter mit E-Mail-Adresse gefunden.` | `No tenants with an email address found.` | `Nenhum inquilino com endereço de e-mail encontrado.` |
 
-Die Reconciliation-Zeile **absorbiert V-2 nicht**. Sie zeigt nur den positiven Residual aus zeitanteilig gekürzten Kosten. Eine Erweiterung um Verbrauchsproration, Gradtagszahl-Korrektur oder eine Occupancy-Engine ist nicht Bestandteil dieses BUILD.
+Andere Texte (Audit-Summary, charge.description, log-Texte) sind
+**nicht** übersetzt.
 
-> **V-2 remains deferred.**
+### 2.6 NK-Nachzahlung (C3)
 
----
+```ts
+const desc = `NK-Nachzahlung ${year}`;
+```
 
-## 5. Betragsschutz / Regressionsmatrix
+bleibt **unverändert deutsch**. Begründung: Wird sowohl als
+`charge.description` (Anzeige im Finance-Bereich) als auch als
+**Dedup-Schlüssel** verwendet (`prisma.charge.findFirst({ where: {
+description: desc }})`). Ein Locale-Wechsel darf keine Dubletten
+erzeugen. Audit-Summary (`${created}× ${desc}`) bleibt ebenfalls
+unverändert.
 
-| Aspekt | Status |
-|--------|--------|
-| bestehende Mieter-allocated-Werte | unverändert |
-| `totalUmlage` | unverändert |
-| Heating-Beträge | unverändert |
-| non-heating-Beträge | unverändert |
-| Rounding-Logik (`Math.round(x * 100) / 100` pro Zeile) | unverändert |
-| Largest-Remainder in `allocate()` | unverändert |
+### 2.7 Empfänger-Locale (DEFERRED)
 
-Regressionsprüfung gegen alle vorhandenen Methoden:
-
-- AREA · CONSUMPTION · UNITS · PERSONS · MEA · CUSTOM
-- Heating: METER · AREA_FALLBACK
-- Mieterwechsel (zwei Leases je 6 Monate)
-- Vollständige vs. teilweise Vermietung
-
-Der Fix berechnet **keine** Methode anders.
-
----
-
-## 6. Test-Evidenz
-
-### 6.1 Neue Tests (`src/lib/allocation/statement.vacancy.test.ts`)
-
-12 Tests, davon 11 grün nach Implementierung:
-
-1. **kein Leerstand → keine Reconciliation-Zeile** (occupied-only)
-2. **ganzjähriger Leerstand → positive Recon-Zeile** (fully vacant unit)
-3. **mixed occupied/vacant units → Residual cent-genau**
-4. **Heizung METER + Leerstand → Residual cent-genau**
-5. **AREA_FALLBACK + Leerstand → Residual cent-genau**
-6. **non-heating CONSUMPTION + Leerstand → Reconciliation berücksichtigt nur Residual**
-7. **Summe aller sichtbaren Zeilen + Recon == totalUmlage cent-genau** (Property-Test über mehrere Konstellationen)
-8. **cent remainder exakt** (3×33,33 + 1×0,01 Largest-Remainder → keine Recon-Zeile nötig)
-9. **negativer/0 Residual → keine Reconciliation-Zeile** (Guard)
-10. **bestehende Mieterbeträge unverändert** (Regressionsschutz)
-11. **partial-year vacancy → nur zeitanteiliger Residual wird ausgewiesen**
-12. **Statement-VACANCY_ID ≠ area-time VACANCY_ID** (Architektur-Sanity)
-
-### 6.2 Aktualisierte Tests (`src/lib/allocation/statement.test.ts`)
-
-Ein bestehender Test musste angepasst werden, weil er explizit die alte (vor V-1 fehlerhafte) Realität abgebildet hat:
-
-- `#12 Zeitanteil bei unterjährigem Mietverhältnis > kein Vertrag (Leerstand) → eine Zeile, nichts umgelegt`
-
-→ umbenannt und erweitert zu: *„kein Vertrag (Leerstand) → Leerstands-Zeile mit 0, Reconciliation-Zeile trägt den Residual"*. Erwartung jetzt: 1 Leerstands-Zeile mit `allocated=0` + 1 Recon-Zeile mit `allocated=1200`. Cent-Invariant erfüllt.
-
-### 6.3 Bestehende Tests unverändert grün
-
-- `src/lib/allocation/statement.test.ts` (21 Tests, davon 1 angepasst)
-- `src/lib/allocation/statement.heating.test.ts` (21 Tests)
-- `src/lib/allocation/area-time.test.ts` (4 Tests, andere Domäne — unverändert)
-- `src/lib/allocation/*.test.ts` gesamt: **76/76 PASS** (7 Dateien)
-- `src/**/*.test.ts` Unit-Suite (npm run test:unit, voller Stand): **284 Assertions PASS / 0 FAIL** in 41 Dateien — ABER: **3 unhandled Prisma-Rejections** in `src/lib/api-list.test.ts`, `src/lib/sso.test.ts`, `src/lib/bank-scheduler.test.ts` (Import der Prisma-Client-Engine), **Unit-Prozess Exit Code 1**
-- Ursache: `node_modules\.prisma\client\query_engine-windows.dll.node` ist auf Windows nicht ladbar („not a valid Win32 application“), weil der Prisma-Client unter WSL (Linux aarch64) generiert wurde — vorbestehende Umgebungslimitation, **nicht** durch 05B-1 verursacht
-- Effektive 05B-1-bezogene Unit-Tests (statement + heating + vacancy): **54/54 PASS**
-
-### 6.4 Sum-Invariant (E2E-Häppchen)
-
-| Szenario | totalUmlage | Σ lines.allocated | Residual |
-|---------|-------------|--------------------|----------|
-| occupied-only, 1000 € / 2 Einheiten | 1000 € | 1000 € | 0 |
-| 1 vermietet + 1 leer, 1000 € AREA | 1000 € | 500 € | 500 € (Recon) |
-| partial-year 6 Monate, 1200 € UNITS | 1200 € | 600 € | 600 € (Recon) |
-| Heizung METER, A vermietet + C leer | 1000 € | 850 € | 150 € (Recon) |
-| mixed 3 Einheiten, 1200 € UNITS | 1200 € | 400+200+0 = 600 € | 600 € (Recon) |
-| 100 € / 3 Einheiten (Largest Remainder) | 100 € | 33.33+33.33+33.34 = 100 € | 0 (kein Recon) |
+- **Nicht implementiert:** `Person.locale` / `Renter.locale` / `Lease.locale`
+- **Keine DB-Migration**
+- **Keine automatische Mietersprache**
+- 05B-2 verwendet **Sprache des auslösenden HaVeWa-Benutzers / aktiven
+  Requests** (C1: expliziter Caller-Parameter + `getLocale()`-Fallback).
+- Empfänger-spezifische Locale bleibt **DEFERRED**.
 
 ---
 
-## 7. Geänderte Dateien
+## 3. Geänderte Dateien
 
 ### Produktiv
 
 | Datei | Änderung |
 |-------|----------|
-| `src/lib/allocation/statement.ts` | `STATEMENT_VACANCY_ID` exportiert; Reconciliation-Logik (Integer-Cent, Guard) in `buildStatement` |
-| `src/server/statements.ts` | `StatementUnit`-Mapping erkennt Recon-Zeile anhand `unitId === STATEMENT_VACANCY_ID`, setzt `leaseId=null`, `renterEmails=[]`, `label=""` (UI lokalisiert) |
-| `src/app/[locale]/(admin)/statements/page.tsx` | lokalisierter Label-Render für Recon-Zeile |
-| `src/app/[locale]/print/statement/page.tsx` | lokalisierter Label-Render für Recon-Zeile |
+| `src/server/actions/statement-mail-texts.ts` | **NEU** — reiner Text-Helper (`buildStatementMailTexts`, `selectStatementHeatingLineKey`, `resolveStatementLocale`, `selectStatementFilename`); keine Duplikate von `messages/*.json`-Inhalten |
+| `src/server/actions/statement-actions.ts` | Server-Action-Signatur erweitert um `locale`-Feld; `getLocale()` als Fallback; Heating-Matrix durch Helper ersetzt; sichtbare Fehlertexte aus Message-Katalog; Subject/PDF-Titel/Filename/Begleittext lokalisiert |
+| `src/components/statement-actions.tsx` | Reicht `useLocale()` als Hidden-Field an beide Forms durch |
+| `messages/de.json` | `statements.errors.*` (3 Keys) |
+| `messages/en.json` | `statements.errors.*` (3 Keys) |
+| `messages/pt-BR.json` | `statements.errors.*` (3 Keys) |
 
 ### Tests
 
 | Datei | Änderung |
 |-------|----------|
-| `src/lib/allocation/statement.vacancy.test.ts` | **NEU** — 12 V-1-Tests (RED → GREEN) |
-| `src/lib/allocation/statement.test.ts` | 1 Test angepasst (V-1-Korrektur sichtbar) |
+| `src/server/actions/statement-mail-texts.test.ts` | **NEU** — Helper-Tests (DE/EN/pt-BR × Heating-Modi × Locale-Validation) |
+| `src/server/actions/statement-mail-texts.locale.test.ts` | **NEU** — 10 Tests (`resolveStatementLocale` × Edge-Cases) |
+| `src/server/actions/statement.heating-pdf.test.ts` | **Refactor (T-1)** — duplizierte `heatingLineFor` entfernt; nutzt `selectStatementHeatingLineKey` (Production-Selektor); +3 Catalog-Sync-Tests (5+3 = 8) |
 
-### Locale
-
-| Datei | Änderung |
-|-------|----------|
-| `messages/de.json` | `statements.reconciliationVacancy` |
-| `messages/en.json` | `statements.reconciliationVacancy` |
-| `messages/pt-BR.json` | `statements.reconciliationVacancy` |
-
-### Doku
+### Dokumentation
 
 | Datei | Änderung |
 |-------|----------|
-| `docs/havewa-05b-report.md` | **NEU** — dieser Bericht |
+| `docs/havewa-05b-report.md` | **ERSETZT** — dieser Bericht (HAVEWA-05B-2); Tracking-Klarstellung V-2 vs 05B-2 |
+| `docs/havewa-05b-1-report.md` | **NEU** — historischer 05B-1-Bericht (vorherige Version dieses Files) + Nachtrag zur Tracking-Klärung |
 
 ---
 
-## 8. Quality-Gate-Status
+## 4. Test-Evidenz
+
+### 4.1 Targeted Tests (neu)
+
+- `src/server/actions/statement-mail-texts.test.ts` — **46/46 PASS**
+  - DE/EN/pt-BR: subject / pdfTitle / filename / greeting / bodyIntro / bodyLabels / resultLabel / closing / heatingLineKey (METER)
+  - DE Heating: NONE / AREA_FALLBACK / MIXED
+  - Locale-Validierung: ungültig/leer/`"DE"` (Großschreibung) → `"de"`
+  - Kein ungewollter deutscher Text in EN/pt-BR
+  - Hinweis: `bodyResult`/`errors`-Tests wurden im Zuge der
+    Dead-Code-Bereinigung entfernt (siehe §1: eine Wahrheitsquelle
+    pro sichtbarem Text → diese Felder sind nicht mehr im Helper).
+- `src/server/actions/statement-mail-texts.locale.test.ts` — **10/10 PASS**
+- `src/server/actions/statement.heating-pdf.test.ts` (T-1 geschlossen) — **8/8 PASS**
+
+### 4.2 Targeted Tests gesamt: 64/64 PASS
+
+### 4.3 Bestehende Tests unverändert grün
+
+- `src/lib/allocation/**` (76/76) — Heating / Statement / Vacancy unverändert
+- `src/i18n/messages.test.ts` (2/2) — Catalog-Sync über alle drei Sprachen
+- `src/lib/pdf.test.ts` (3/3) — simplePdf unverändert
+- Full-Unit-Suite: **43 Testdateien / 344 Assertions PASS** (siehe §5)
+
+---
+
+## 5. Quality-Gate-Status
 
 | Gate | Status |
 |------|--------|
-| Targeted Tests (`statement.vacancy.test.ts`) | ✅ 12/12 PASS |
-| Targeted Tests (statement + heating + vacancy) | ✅ 54/54 PASS |
-| Allocation-Suite (`src/lib/allocation/**`) | ✅ 76/76 PASS |
-| Unit-Suite (`src/**/*.test.ts`, voller Stand) | ⚠️ **284 Assertions PASS / 0 FAIL** — aber **3 unhandled Prisma-Rejections** (api-list, sso, bank-scheduler) und **Exit Code 1** wegen vorbestehender Prisma-Windows-DLL-Limitation. Kein 05B-1-Regress. |
-| Integration (WSL/Docker) | ❌ **NOT_VERIFIED_ENVIRONMENT** — Prisma-Query-Engine unter Windows nicht ladbar (WSL-Linux-Engine fälschlich als `.dll.node` ausgeliefert) + esbuild-`@esbuild/win32-arm64` ≠ WSL-`linux-arm64`. Vorbestehend, kein Repo-Eingriff im BUILD-Scope. |
-| Full Regression | **PARTIAL / NOT_FULLY_VERIFIED** — Code, Unit-Assertions, Build, Typecheck, Lint grün; Integration durch Umgebung blockiert. |
-| Typecheck (`tsc --noEmit`) | ✅ 0 Fehler |
-| Lint (`eslint .`) | ✅ 89 Errors / 16 Warnings — **0 neue Findings** (Baseline exakt reproduziert) |
-| Production Build (`next build`) | ✅ Exit 0 (Prisma-DLL-Fehler beim Static-Page-Collect non-fatal, Seiten rendern dynamisch) |
-| UI/Print Smoke | ✅ statische Verifikation: `STATEMENT_VACANCY_ID` korrekt verdrahtet, locale-Keys in 3 Sprachen, Recon-Zeile wird lokalisiert gerendert, server-seitiges StatementUnit-Mapping konsistent |
+| Targeted Tests (mail-texts) | ✅ 46/46 PASS |
+| Targeted Tests (locale) | ✅ 10/10 PASS |
+| Targeted Tests (heating-pdf, T-1) | ✅ 8/8 PASS (vorher 4/4 mit Test-Duplikation) |
+| Targeted Tests gesamt | ✅ **64/64 PASS** |
+| Bestehende Tests unverändert | ✅ Allocation 76/76, i18n 2/2, pdf 3/3 |
+| Full Unit-Assertions | ✅ 344/344 Assertions PASS (43 Testdateien) |
+| Full Unit-Prozess | ⚠️ **Exit 1** — 3 unhandled Prisma-Rejections in `src/lib/api-list.test.ts`, `src/lib/sso.test.ts`, `src/lib/bank-scheduler.test.ts` (Import der Prisma-Client-Engine: `query_engine-windows.dll.node` „not a valid Win32 application", vorbestehende Windows-ARM64/WSL-Prisma-Umgebungslimitation) |
+| TypeScript `tsc --noEmit` | ✅ Exit 0 |
+| Lint (`eslint .`) | ✅ 89 Errors / 16 Warnings — **exakt Baseline, 0 neue Findings** |
+| Production Build (`next build`) | ✅ Exit 0 (Nicht-fatale Prisma-Logs beim Page-Data-Sammeln sind identisch zur 05A-/05B-1-Baseline) |
+| Integration | ❌ **NOT_VERIFIED_ENVIRONMENT** — dieselbe vorbestehende Prisma-Windows-DLL-Limitation; package.json, package-lock.json, prisma/schema.prisma, prisma/migrations/migration_lock.toml unverändert |
+| Full Regression | **PARTIAL / NOT_FULLY_VERIFIED** — Code/Unit-Assertions/Build/Typecheck/Lint grün; Integration durch Umgebung blockiert |
+| Locale/Server-Action-Smoke | ✅ `resolveStatementLocale` deckt alle dokumentierten Edge-Cases ab (gültig, ungültig, leer, Whitespace, Case-Insensitiv für `de`/`en`); `useLocale()`-Wert wird via Hidden-Field in die Action durchgereicht (Caller-Kontext). Echte Browser-/Action-Smoke mit DB nicht möglich. |
+
+### 5.1 Testzuwachs gegenüber 05B-1
+
+| | HAVEWA-05B-1 (vorher) | HAVEWA-05B-2 (jetzt) | Delta |
+|---|---|---|---|
+| Testdateien | 41 | 43 | **+2** |
+| Assertions | 284 | 344 | **+60** |
+
+**Zusammensetzung des Brutto-Zuwachses:**
+
+- `statement-mail-texts.test.ts` (NEU): 46 Tests
+- `statement-mail-texts.locale.test.ts` (NEU): 10 Tests
+- `statement.heating-pdf.test.ts` (Refactor T-1): 4 → 8 = +4
+
+Brutto: 46 + 10 + 4 = **+60** neue Test-Assertions, exakt passend zur
+Differenz in der Tabelle. Keine Test-Lücken.
+
+Hinweis: Der im BUILD-Zwischenbericht genannte Brutto-Wert „+68"
+(54 mail-texts + 10 locale + 4 heating-pdf) wurde durch die
+Helper-Dead-Code-Bereinigung (Entfernung von `bodyResult`/`errors`/
+`money`-Helper-Tests) auf **+60 Netto** reduziert. Die
+Bereinigungs-Logik selbst ist unter §1 dokumentiert.
 
 ---
 
-## 9. Working-Tree-Hygiene
+## 6. Working-Tree-Hygiene
 
-- `src/components/theme-provider.tsx` — pre-existing Modification, **nicht angefasst**
-- `test-results/` — pre-existing Untracked, **nicht angefasst**
-- Keine DB-Migration, keine Dependency-Änderung, keine REST-API-Änderung, keine MCP-Änderung
-- Keine PropertyAI-/Dach-KI-Arbeit
+- `src/components/theme-provider.tsx` — **pre-existing** Modification, **NICHT angefasst**
+- `test-results/` — **pre-existing** Untracked, **NICHT angefasst**
+- Keine DB-Migration, keine Dependency-Änderung, keine REST-API-Änderung
+- Keine PropertyAI-/Dach-KI-Arbeit, keine HaVeWa-Core-Änderung
+- Keine Stage-/Commit-/Push-Aktionen
 
 ---
 
-## 10. Offene Punkte / V-2
+## 7. Verbleibende DEFERRED-Befunde (außerhalb dieses BUILD)
 
-V-2 (Verbrauchs-Vakanz bei unterjähriger Lease) bleibt **deferred**. Keine Erweiterung in `05B-1`.
-
-Mögliche nächste Schritte (außerhalb dieses BUILD):
-
-- `05B-2`: Verbrauchsproration nach Monatsanteilen innerhalb einer Lease (Grad der Komplexität: mittel)
-- `05B-3`: Gradtagszahl-Korrektur / Meter-Zeitraumlogik (Grad: hoch)
-
-Diese sind explizit **nicht** Bestandteil von `05B-1` und erfordern separate Planung.
+- **V-2 (Verbrauchs-Vakanz bei unterjähriger Lease):** Gradtagszahl-Korrektur /
+  Meter-Periode-Logik. **Nicht Bestandteil von 05B-2.** Eigene, separate Planung
+  erforderlich. Die Tracking-Klarstellung am Anfang dieses Berichts schließt
+  eine Namensverwechslung explizit aus.
+- **Empfänger-Locale (`Person.locale`/`Renter.locale`):** Separate Planung,
+  DB-Migration erforderlich. Aktuell wird die Sprache des **auslösenden
+  Nutzers** verwendet.
+- **PDF-Encoding-Limitation:** `simplePdf` kodiert aktuell nur CP1252
+  (latin1). Unicode-Zeichen (z. B. `ñ`, `ç`, `á` in pt-BR-Texten, die nicht
+  in latin1 vorkommen) werden zu `?`. Aktuell sind die in 05B-2 eingeführten
+  pt-BR-Texte bewusst latin1-kompatibel gehalten (kein Akzent). Eine
+  UTF-8-PDF-Engine ist ein eigenes, späteres Vorhaben (echte PDF-Lib).
+- **Case-Asymmetrie in `resolveStatementLocale`:** `"PT-BR"` und
+  `"pt-br"` werden nicht zu `"pt-BR"` normalisiert (sondern fallen
+  auf `"de"` zurück). `useLocale()` liefert kanonisch `"pt-BR"`, der
+  Fallback ist sicher; keine 05B-2-Aktion notwendig.

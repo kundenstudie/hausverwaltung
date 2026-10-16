@@ -842,7 +842,12 @@
     "explain": "AI: explain statement",
     "explaining": "Explaining…",
     "explainHint": "Without ANTHROPIC_API_KEY only a short summary is shown.",
-    "reconciliationVacancy": "Vacancy / landlord share (time-proportional)"
+    "reconciliationVacancy": "Vacancy / landlord share (time-proportional)",
+    "errors": {
+      "errorNoProperty": "No property selected.",
+      "errorNoOpenArrears": "No open arrears to book.",
+      "errorNoTenantsWithEmail": "No tenants with an email address found."
+    }
   },
   "costType": {
     "GRUNDSTEUER": "Property tax",

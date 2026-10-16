@@ -842,7 +842,12 @@
     "explain": "KI: Abrechnung erklären",
     "explaining": "Erkläre…",
     "explainHint": "Ohne ANTHROPIC_API_KEY wird nur eine Kurzfassung gezeigt.",
-    "reconciliationVacancy": "Leerstand / Vermieteranteil (zeitanteilig)"
+    "reconciliationVacancy": "Leerstand / Vermieteranteil (zeitanteilig)",
+    "errors": {
+      "errorNoProperty": "Kein Objekt",
+      "errorNoOpenArrears": "Keine offenen Nachzahlungen zu buchen.",
+      "errorNoTenantsWithEmail": "Keine Mieter mit E-Mail-Adresse gefunden."
+    }
   },
   "costType": {
     "GRUNDSTEUER": "Grundsteuer",

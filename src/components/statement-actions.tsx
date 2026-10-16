@@ -1,15 +1,22 @@
 "use client";
 
 import { useActionState, useEffect } from "react";
-import { useTranslations } from "next-intl";
+import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
 import { Coins, Mail } from "lucide-react";
 import { bookStatementCharges, emailStatementToTenants } from "@/server/actions/statement-actions";
 import type { ActionState } from "@/lib/schemas";
 import { Button } from "@/components/ui/button";
 
+/**
+ * HAVEWA-05B-2: Diese Client-Component reicht die aktive UI-Locale
+ * (aus useLocale()) als Hidden-Field an die Server-Action weiter. Grund:
+ * in Server-Actions ist `getLocale()` unzuverlässig; ein expliziter
+ * Caller-Parameter (C1) ist der stabile Pfad.
+ */
 export function StatementActions({ propertyId, year }: { propertyId: string; year: number }) {
   const t = useTranslations("statements");
+  const locale = useLocale();
   const [bookState, book, booking] = useActionState<ActionState, FormData>(bookStatementCharges, {});
   const [mailState, mail, mailing] = useActionState<ActionState, FormData>(emailStatementToTenants, {});
 
@@ -27,6 +34,7 @@ export function StatementActions({ propertyId, year }: { propertyId: string; yea
       <form action={book}>
         <input type="hidden" name="propertyId" value={propertyId} />
         <input type="hidden" name="year" value={year} />
+        <input type="hidden" name="locale" value={locale} />
         <Button type="submit" size="sm" variant="outline" disabled={booking}>
           <Coins className="size-4" />
           {t("bookCharges")}
@@ -35,6 +43,7 @@ export function StatementActions({ propertyId, year }: { propertyId: string; yea
       <form action={mail}>
         <input type="hidden" name="propertyId" value={propertyId} />
         <input type="hidden" name="year" value={year} />
+        <input type="hidden" name="locale" value={locale} />
         <Button type="submit" size="sm" variant="outline" disabled={mailing}>
           <Mail className="size-4" />
           {t("mailTenants")}

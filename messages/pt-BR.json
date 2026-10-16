@@ -842,7 +842,12 @@
     "explain": "IA: explicar demonstrativo",
     "explaining": "Explicando…",
     "explainHint": "Sem ANTHROPIC_API_KEY, apenas um resumo curto é exibido.",
-    "reconciliationVacancy": "Vacância / parte do proprietário (proporcional ao tempo)"
+    "reconciliationVacancy": "Vacância / parte do proprietário (proporcional ao tempo)",
+    "errors": {
+      "errorNoProperty": "Nenhum imóvel selecionado.",
+      "errorNoOpenArrears": "Nenhum débito em aberto para lançar.",
+      "errorNoTenantsWithEmail": "Nenhum inquilino com endereço de e-mail encontrado."
+    }
   },
   "costType": {
     "GRUNDSTEUER": "Imposto predial",
