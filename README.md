@@ -7,7 +7,7 @@ _🇬🇧 English · 🇩🇪 [Deutsch](README.de.md)_
 📖 **[Documentation & help](https://fgilde.github.io/hausverwaltung/docs/)** · 🌐 **[Website](https://fgilde.github.io/hausverwaltung/)**
 
 Complete property-management software for **rental and HOA (WEG) administration**.
-Multi-tenant, role-based, bilingual (DE/EN).
+Multi-tenant, role-based, trilingual (DE / EN / pt-BR).
 
 ## Features
 
@@ -97,17 +97,26 @@ role, config operations require admin. All access is scoped to the token's tenan
 |---|---|
 | `npm run dev` | Dev server |
 | `npm run build` / `npm start` | Production build / start |
-| `npm test` | Vitest (engine, statements, validation …) |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | TypeScript `tsc --noEmit` |
+| `npm test` | Vitest (alias for `test:unit`; engine, statements, validation …) |
+| `npm run test:unit` | Unit tests (Vitest, `vitest.config.ts`) |
+| `npm run test:integration` | Integration tests (Vitest, `vitest.integration.config.ts`) |
+| `npm run test:e2e` | Playwright end-to-end tests |
+| `npm run test:all` | Unit + integration tests |
 | `npm run db:up` | Postgres container (local) |
+| `npm run db:generate` | Prisma client generation |
 | `npm run db:migrate` | Prisma migration (dev) |
+| `npm run db:migrate-secrets` | Migrate legacy plaintext tenant secrets to encrypted form |
 | `npm run db:seed` | Demo data (optional) |
+| `npm run db:reset` | Reset the dev DB and re-seed |
 | `npm run db:studio` | Prisma Studio |
 
 ## Project structure
 
 ```
 prisma/schema.prisma          data model + migrations
-messages/{de,en}.json         translations (new language = new file)
+messages/{de,en,pt-BR}.json   translations (new language = new file)
 src/
   app/[locale]/(admin)/...     manager app (internal roles)
   app/[locale]/portal/...      tenant/owner portal
@@ -266,9 +275,11 @@ and the uploaded documents across updates.
 ## Known simplifications
 
 Marked with `ponytail:` comments in the code: HeizkostenV consumption allocation
-falls back to area without meter integration · DATEV export is simplified CSV · the
-time-based area model (`docs/flaechenmodell.md`) is specified as a draft but not yet
-implemented.
+falls back to area without meter integration · DATEV export is simplified CSV ·
+the built-in `simplePdf` encoder only supports WinAnsi/CP1252; characters outside
+Latin-1/CP1252 (e.g. emoji, CJK, Cyrillic) are replaced with `?`. Standard German
+umlauts and Portuguese accented characters (à á â ã ç é ê í ó ô õ ú ü, …) are in
+Latin-1 and render correctly.
 
 ## License
 

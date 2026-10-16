@@ -5,7 +5,7 @@ _🇬🇧 [English](README.md) · 🇩🇪 Deutsch_
 📖 **[Dokumentation & Hilfe](https://fgilde.github.io/hausverwaltung/docs/)** · 🌐 **[Website](https://fgilde.github.io/hausverwaltung/)**
 
 Vollständige Immobilienverwaltungssoftware für **Miet- und WEG-Verwaltung**.
-Mandantenfähig, rollenbasiert, zweisprachig (DE/EN).
+Mandantenfähig, rollenbasiert, dreisprachig (DE / EN / pt-BR).
 
 ## Funktionsumfang
 
@@ -102,10 +102,19 @@ ist auf den Mandanten des Tokens beschränkt.
 |---|---|
 | `npm run dev` | Dev-Server |
 | `npm run build` / `npm start` | Produktions-Build / -Start |
-| `npm test` | Vitest (Engine, Abrechnung, Validierung …) |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | TypeScript `tsc --noEmit` |
+| `npm test` | Vitest (Alias für `test:unit`; Engine, Abrechnung, Validierung …) |
+| `npm run test:unit` | Unit-Tests (Vitest, `vitest.config.ts`) |
+| `npm run test:integration` | Integrations-Tests (Vitest, `vitest.integration.config.ts`) |
+| `npm run test:e2e` | Playwright End-to-End-Tests |
+| `npm run test:all` | Unit- + Integrations-Tests |
 | `npm run db:up` | Postgres-Container (lokal) |
+| `npm run db:generate` | Prisma-Client erzeugen |
 | `npm run db:migrate` | Prisma-Migration (dev) |
+| `npm run db:migrate-secrets` | Legacy-Klartext-Mandantensecrets in die verschlüsselte Form überführen |
 | `npm run db:seed` | Demo-Daten (optional) |
+| `npm run db:reset` | Dev-DB zurücksetzen und neu seeden |
 | `npm run db:studio` | Prisma Studio |
 
 ## Deployment (VPS + Docker)
@@ -238,9 +247,11 @@ funktioniert auf jeder Debian-Maschine; Datenbank, Passwort und hochgeladene Dok
 ## Bekannte Vereinfachungen
 
 `ponytail:`-Kommentare im Code: HeizkostenV-Verbrauchsumlage fällt mangels
-Zählerintegration auf Fläche zurück · DATEV-Export ist vereinfachtes CSV · das
-zeitabhängige Flächenmodell (`docs/flaechenmodell.md`) ist als Entwurf spezifiziert,
-aber noch nicht implementiert.
+Zählerintegration auf Fläche zurück · DATEV-Export ist vereinfachtes CSV · der
+eingebaute `simplePdf`-Encoder unterstützt nur WinAnsi/CP1252; Zeichen außerhalb
+von Latin-1/CP1252 (z. B. Emoji, CJK, Kyrillisch) werden zu `?` ersetzt. Übliche
+deutsche Umlaute und portugiesische Akzentzeichen (à á â ã ç é ê í ó ô õ ú ü, …)
+liegen in Latin-1 und werden korrekt dargestellt.
 
 ## Lizenz
 
