@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // HAVEWA-07A-2: Generated output (tsc-Output, Runtime-Tree).
+    "scripts/dist/**",
+    "scripts/.runtime/**",
   ]),
 ]);
 

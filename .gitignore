@@ -45,3 +45,11 @@ next-env.d.ts
 !.env.example
 !.env.prod.example
 !.env.test.example
+
+# HAVEWA-07A-2: Generated output (Bootstrap-Compile + Runtime-Packaging)
+# scripts/dist/   = tsc-Output von build-bootstrap.mjs
+# scripts/.runtime/ = gepackagter Prisma-CLI-Tree von package-runtime.mjs
+# runtime-state/ = Port-Info, last-shutdown (von start-runtime / start-with-fallback)
+scripts/dist/
+scripts/.runtime/
+runtime-state/
