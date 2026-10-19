@@ -26,7 +26,7 @@
 import path from "node:path";
 import process from "node:process";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runPrismaCli } from "./prisma-runtime-tree.mjs";
 
 function fail(msg, code = 1) {
@@ -189,6 +189,20 @@ export async function runMigrateDeploy({
   safeLog.log("[migrate-deploy] OK\n");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Entry-Point-Check: korrekt plattformübergreifend via pathToFileURL.
+// Der vorherige Template-String-Vergleich (`file://${process.argv[1]}`)
+// war auf Windows fehlerhaft, weil argv[1] Backslashes enthält,
+// import.meta.url aber Forward-Slashes — main() lief nie.
+// Siehe G5-Reparatur.
+function isEntryPoint() {
+  try {
+    if (!process.argv[1]) return false;
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   main().catch((e) => fail(e?.stack || String(e)));
 }

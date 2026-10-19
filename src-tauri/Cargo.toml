@@ -1,0 +1,78 @@
+[package]
+name = "havewa-desktop"
+version = "0.1.0"
+description = "HaVeWa Desktop Shell (HAVEWA-07C) — Tauri v2 minimal shell, x64-only Windows-v1"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+license = "AGPL-3.0-only"
+
+[lib]
+name = "havewa_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "havewa-desktop"
+path = "src/main.rs"
+
+# Build-Constraint (D-07C-1): Windows-v1 ist strikt x86_64-pc-windows-msvc.
+# Es gibt KEIN Dual-Target. Wenn auf einem ARM64-Host gebaut wird, MUSS der
+# Aufrufer '--target x86_64-pc-windows-msvc' explizit angeben.
+
+[dependencies]
+# Tauri v2 stable (max stable 2.12.4, Auftrag §3).
+# Wir behalten `default-features = true`, weil sonst `wry` (Desktop-Runtime)
+# und damit der `AppHandle`-Default-Generic `Wry` nicht verfügbar sind.
+# Tray-Icon wird nicht zwingend benötigt in 07C, aber wir lassen es für
+# spätere Phase 9-Vorbereitung aktiv.
+tauri = { version = "2.12.4", default-features = true, features = [
+    "tray-icon",
+] }
+tauri-plugin-single-instance = { version = "2.0.2", default-features = false }
+
+# Crypto-starke Zufallswerte (Auftrag §7)
+rand = "0.8"
+
+# Async/Process/IO/Net/Time/Sync für Orchestrator + Child-Tracking + Polling
+tokio = { version = "1.40", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+    "fs",
+] }
+
+# Serialisierung für port.json + secrets.json
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Base64-Encoding für Secrets (URL-safe, no padding)
+base64 = "0.22"
+
+# thiserror für typed Errors (Auftrag §13, kein Secret-Leak im Display)
+thiserror = "1.0"
+
+# OS/Env-Helfer (Windows-only) — bewusst klein, ohne breite Features.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+] }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["test-util", "macros", "rt"] }
+tempfile = "3.10"
+
+[build-dependencies]
+tauri-build = { version = "2.7.3", default-features = false }
+
+[profile.release]
+opt-level = "z"     # Größe statt Geschwindigkeit (Desktop-App, lange laufend)
+lto = true
+codegen-units = 1
+panic = "abort"     # kein symbolischer Stack-Unwind in Release — kleineres Binary
+strip = true        # Release: Symbole entfernen

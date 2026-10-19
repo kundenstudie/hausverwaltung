@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "HAVEWA-07C: least-privilege capabilities. Only the Tauri core APIs needed to run a localhost-routed Webview with no shell, no fs, no http, no process spawning from the JS side. All side effects are executed server-side in Rust (Node + Postgres lifecycle is owned by 07B).",
+  "windows": ["main", "splash"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-title",
+    "core:window:allow-minimize",
+    "core:window:allow-unminimize"
+  ]
+}

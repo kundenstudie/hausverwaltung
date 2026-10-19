@@ -15,6 +15,9 @@ const eslintConfig = defineConfig([
     // HAVEWA-07A-2: Generated output (tsc-Output, Runtime-Tree).
     "scripts/dist/**",
     "scripts/.runtime/**",
+    // HAVEWA-07C: Tauri/Cargo-Build-Artefakte (von cargo + tauri-build generiert).
+    "src-tauri/target/**",
+    "src-tauri/gen/schemas/**",
   ]),
 ]);
 

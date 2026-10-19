@@ -171,3 +171,120 @@ describe("dbTargetLabel (main()-Log-Pfad, Review-Fix M1)", () => {
     expect(logLine).not.toContain(url);
   });
 });
+
+// HAVEWA-07C-G5 — Entry-Point-Check MUSS main() ausfuehren.
+//
+// Bug-Historie: der alte Template-String-Vergleich
+//   `file://${process.argv[1]}`
+// schlug auf Windows fehl, weil argv[1] Backslashes enthaelt, import.meta.url
+// aber Forward-Slashes. Folge: main() lief nie, das Skript war still mit
+// exit 0, Migrationen wurden nicht angewandt, Bootstrap scheiterte mit P2021.
+//
+// Diese Tests verifizieren, dass das Skript beim direkten Aufruf
+//   node scripts/migrate-deploy.mjs
+// tatsaechlich in main() eintritt (fail-closed, kein stilles exit 0).
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+describe("migrate-deploy entry-point (G5-Reparatur)", () => {
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  // Vitest laeuft mit ESM und unterstuetzt import.meta.url direkt.
+  // Wir nutzen den absoluten Windows-Pfad zum Skript (Backslashes),
+  // um genau das Szenario nachzustellen, das in G5 still exit 0 lieferte.
+  const scriptPath = path.join(scriptDir, "migrate-deploy.mjs");
+  const nodeBin = process.execPath;
+
+  it("ohne DATABASE_URL: fail-closed, exit 1, klare Fehlermeldung", () => {
+    let out = "";
+    let err = "";
+    let code = 0;
+    try {
+      out = execFileSync(nodeBin, [scriptPath], {
+        env: { ...process.env, DATABASE_URL: "" },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e: unknown) {
+      // execFileSync wirft bei non-zero exit; wir erwarten das hier.
+      const ex = e as { status?: number; stdout?: unknown; stderr?: unknown };
+      code = ex.status ?? 1;
+      out = typeof ex.stdout === "string" ? ex.stdout : "";
+      err = typeof ex.stderr === "string" ? ex.stderr : "";
+    }
+    expect(code).toBe(1);
+    const combined = `${out}\n${err}`;
+    expect(combined).toMatch(/DATABASE_URL/);
+    expect(combined).toMatch(/FAIL/);
+  });
+
+  it("mit DATABASE_URL, aber fehlendem Tree: fail-closed, exit 1, Hinweis auf package-runtime", () => {
+    let out = "";
+    let err = "";
+    let code = 0;
+    const fakeDb = "postgresql://x:x@127.0.0.1:5432/x";
+    const fakeTree = "C:\\definitely-not-existing-prisma-tree-xyz";
+    try {
+      out = execFileSync(nodeBin, [scriptPath], {
+        env: {
+          ...process.env,
+          DATABASE_URL: fakeDb,
+          HAVEWA_RUNTIME_PRISMA_DIR: fakeTree,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e: unknown) {
+      const ex = e as { status?: number; stdout?: unknown; stderr?: unknown };
+      code = ex.status ?? 1;
+      out = typeof ex.stdout === "string" ? ex.stdout : "";
+      err = typeof ex.stderr === "string" ? ex.stderr : "";
+    }
+    expect(code).toBe(1);
+    const combined = `${out}\n${err}`;
+    expect(combined).toMatch(/Prisma-Runtime-Tree fehlt/);
+    expect(combined).toMatch(/package-runtime\.mjs/);
+  });
+
+  it("mit Tree + DB-URL: Skript betritt main() und versucht Prisma-Aufruf (nicht still exit 0)", () => {
+    // Wir koennen hier keine echte DB garantieren; aber wir beweisen
+    // zumindest, dass main() durchlaeuft und der Tree-Pfad + DB-Log
+    // geschrieben werden (vor dem eigentlichen DB-Connect).
+    const tree = path.join(scriptDir, "..", ".runtime", "prisma-cli");
+    if (!existsSync(tree)) {
+      // Wenn der Tree nicht gebaut ist, skip — wir wollen diesen Test
+      // nicht zu einem package-runtime-Lauf koppeln.
+      return;
+    }
+    let out = "";
+    let err = "";
+    let code = 0;
+    try {
+      out = execFileSync(nodeBin, [scriptPath], {
+        env: {
+          ...process.env,
+          DATABASE_URL: "postgresql://x:x@127.0.0.1:1/nonexistent",
+          HAVEWA_RUNTIME_PRISMA_DIR: tree,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+      });
+    } catch (e: unknown) {
+      const ex = e as { status?: number; stdout?: unknown; stderr?: unknown };
+      code = ex.status ?? 1;
+      out = typeof ex.stdout === "string" ? ex.stdout : "";
+      err = typeof ex.stderr === "string" ? ex.stderr : "";
+    }
+    const combined = `${out}\n${err}`;
+    // main() MUSS gelaufen sein: tree + db + prisma-Logmarker sichtbar.
+    expect(combined).toMatch(/\[migrate-deploy\] tree:/);
+    expect(combined).toMatch(/\[migrate-deploy\] db:/);
+    expect(combined).toMatch(/prisma generate|prisma migrate deploy/);
+    // Skript darf NICHT still mit exit 0 beendet haben, weil DB nicht erreichbar.
+    expect(code).not.toBe(0);
+  });
+});
+
+// Helper (existsSync gibt es in node:fs; vermeidet Import-Top-Level-Konflikt).
+import { existsSync } from "node:fs";

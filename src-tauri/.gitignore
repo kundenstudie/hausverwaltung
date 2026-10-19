@@ -1,0 +1,7 @@
+# HAVEWA-07C — src-tauri .gitignore (Auftrag §16).
+#
+# Tauri-Konvention: target/ und gen/schemas sind Build-Artefakte.
+# Cargo.lock IST commitwürdig (Locks Dependencies deterministisch).
+
+/target/
+/gen/schemas/

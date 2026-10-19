@@ -23,6 +23,7 @@ import { promises as fs } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 const HOST = "127.0.0.1";
 const PORTS = [3000, 3001, 3002, 3003, 3004, 3005];
@@ -107,7 +108,17 @@ async function main() {
 
 // Wenn dieses Skript direkt aufgerufen wird, main() ausfuehren.
 // Beim Import (z. B. von Tests) nur die Helfer exportieren.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Korrekt plattformübergreifend: argv[1] hat Windows-Backslashes,
+// import.meta.url hat Forward-Slashes — daher pathToFileURL().
+function isEntryPoint() {
+  try {
+    if (!process.argv[1]) return false;
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+}
+if (isEntryPoint()) {
   main().catch((e) => fail(e?.stack || String(e)));
 }
 
