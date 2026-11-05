@@ -44,6 +44,9 @@
       "resources/runtime/": "runtime/"
     },
     "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
     "category": "Productivity",
@@ -58,6 +61,8 @@
         "installMode": "currentUser",
         "languages": ["German"],
         "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "installerHooks": "installer-hooks.nsh"
       }
     }
