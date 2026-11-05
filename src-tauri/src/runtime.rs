@@ -1,8 +1,10 @@
 // HAVEWA-07C — Runtime-Spawn (Auftrag §4, §5, §7, §14).
+// HAVEWA-07D G3 — Release-Runtime-Pfade + Env-Allowlist.
 //
 // Tauri/Rust darf NIEMALS automatisch System-Node verwenden. Wir erlauben
-// nur HAVEWA_NODE_BIN (oder den Dev-Default), validieren die Architektur
-// (x86_64), und spawnen das bestehende `start-runtime-with-pg.mjs`.
+// nur das gebündelte Node (runtime/node/node.exe) — im Dev-Modus den
+// kontrollierten Dev-Default —, validieren die Architektur (x86_64) und
+// spawnen das bestehende `start-runtime-with-pg.mjs` aus dem App-Stage.
 //
 // Child-Ownership (Auftrag §7): Wir halten das ECHTE std::process::Child
 // bis zum Shutdown. KEINE Rekonstruktion aus PID (PID-Reuse-Risiko).
@@ -17,9 +19,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::env::ChildEnv;
 use crate::error::{AppError, AppResult};
 
-/// Skript-Pfad relativ zum Repo-Root.
+/// Skript-Pfad relativ zum App-Stage.
 pub const RUNTIME_SCRIPT: &str = "scripts\\start-runtime-with-pg.mjs";
 
 /// Pflicht-Env-Vars, die an das Node-Child durchgereicht werden.
@@ -31,6 +34,10 @@ pub const ENV_KEYS_REQUIRED: &[&str] = &[
     "AUTH_SECRET",
     "SHUTDOWN_TOKEN",
     "POSTGRES_RUNTIME_DIR",
+    // G3: Desktop-Betrieb
+    "HAVEWA_DESKTOP_RUNTIME",
+    "HAVEWA_PRISMA_SKIP_GENERATE",
+    "AUTH_TRUST_HOST",
 ];
 
 /// Optional durchgereichte Env-Vars.
@@ -81,14 +88,18 @@ pub fn validate_x64_node(path: &Path) -> AppResult<()> {
 /// Konfiguriert den Spawn-Befehl. Das Child wird gestartet und das
 /// ECHTE Handle zurückgegeben. Der Caller MUSS das Handle bis zum
 /// Shutdown halten — keine PID-Rekonstruktion.
+///
+/// G3: Das Child bekommt eine EXPLIZIT aufgebaute Environment
+/// (Allowlist), NICHT die komplette Eltern-Environment. `PATH` wird
+/// kontrolliert gesetzt (Stage-Node + Stage-PostgreSQL + System32).
 pub fn spawn_runtime(
     node_bin: &Path,
-    repo_root: &Path,
+    app_dir: &Path,
     env_overrides: &[(&str, &str)],
 ) -> AppResult<Child> {
     validate_x64_node(node_bin)?;
 
-    let script = repo_root.join(RUNTIME_SCRIPT);
+    let script = app_dir.join(RUNTIME_SCRIPT);
     if !script.exists() {
         return Err(AppError::RuntimeSpawn {
             stage: "script_missing",
@@ -101,23 +112,18 @@ pub fn spawn_runtime(
     // kontrolliert zu halten.
     let mut cmd = Command::new(node_bin);
     cmd.arg(&script)
-        .current_dir(repo_root)
+        .current_dir(app_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    // Env-Overrides (vom Caller vorgegeben).
+    // Env: Allowlist-Basis + explizite Overrides. KEIN blindes Erben.
+    let mut child_env = ChildEnv::base();
     for (k, v) in env_overrides {
-        cmd.env(k, v);
+        child_env.set(k, v);
     }
-
-    // PATH muss da sein, damit Postgres-Binaries gefunden werden (07B).
-    // Wir übernehmen PATH aus dem aktuellen Env NUR, wenn der Caller es nicht
-    // überschrieben hat.
-    if !env_overrides.iter().any(|(k, _)| *k == "PATH") {
-        if let Ok(p) = std::env::var("PATH") {
-            cmd.env("PATH", p);
-        }
+    for (k, v) in &child_env.vars {
+        cmd.env(k, v);
     }
 
     let child = cmd.spawn().map_err(|e| AppError::Io {
@@ -207,18 +213,14 @@ fn terminate_own_child(_child: &mut Child) {
     unreachable!("HAVEWA-07C is Windows-v1 only");
 }
 
-/// Liefert den Repo-Root (Verzeichnis, in dem `scripts/start-runtime-with-pg.mjs`
-/// liegt).
-pub fn repo_root() -> AppResult<PathBuf> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let p = PathBuf::from(manifest_dir);
-    let parent = p
-        .parent()
-        .ok_or(AppError::RuntimeSpawn {
-            stage: "no_repo_root",
-            exit: None,
-        })?;
-    Ok(parent.to_path_buf())
+/// Liefert den Runtime-Root (Verzeichnis, in dem `runtime/node/node.exe`,
+/// `runtime/postgres/bin/` und `runtime/app/` liegen).
+///
+/// G3: Im Release kommt der Wert aus `HAVEWA_RUNTIME_ROOT`, den Tauri
+/// beim Start aus `resource_dir()` setzt. Damit braucht der Release-Build
+/// KEINEN Repo-Pfad und KEIN `CARGO_MANIFEST_DIR`.
+pub fn runtime_root() -> AppResult<PathBuf> {
+    crate::paths::runtime_root()
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ use std::time::Duration;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub mod acl;
+pub mod env;
 pub mod error;
 pub mod navigation;
 pub mod paths;
@@ -64,8 +65,6 @@ pub fn run() {
 }
 
 fn run_inner() -> error::AppResult<()> {
-    let cfg = StartupConfig::from_env_or_default()?;
-
     let state = AppState {
         runtime_child: Mutex::new(None),
         shutdown_token: Mutex::new(None),
@@ -78,6 +77,15 @@ fn run_inner() -> error::AppResult<()> {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // KEIN Logging von argv-Inhalten (Auftrag §9 / §6).
             // Nur Fokus auf bestehendes main.
+            //
+            // G4: Der Callback laeuft in der PRIMAEREN Instanz (die zweite
+            // Instanz beendet sich ueber `std::process::exit(0)` im Plugin-
+            // Setup, BEVOR der setup()-Hook ausgefuehrt wird — sie startet
+            // also nie einen eigenen Runtime-Stack).
+            //
+            // WICHTIG: Hier KEIN `app.exit(0)` aufrufen. Das wuerde die
+            // primaere Instanz beenden (der Callback laeuft dort) und deren
+            // Node-/PostgreSQL-Child als Waisen zuruecklassen.
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
@@ -87,7 +95,23 @@ fn run_inner() -> error::AppResult<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![])
         .setup(move |app| {
+            // G3: Runtime-Root aus den gebündelten Resources setzen, BEVOR die
+            // Startup-Config gebaut wird. Im Release ist das der installierte
+            // Resource-Root (Windows: Verzeichnis der EXE) + `runtime/`.
             let handle = app.handle().clone();
+            if let Err(e) = resolve_runtime_root(&handle) {
+                eprintln!("[havewa-desktop] runtime root resolution failed: {e}");
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+
+            let cfg = match StartupConfig::from_env_or_default() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[havewa-desktop] startup config failed: {e}");
+                    return Err(Box::new(e) as Box<dyn std::error::Error>);
+                }
+            };
+
             let mut orch = Orchestrator::new(cfg);
             let steps: Box<dyn startup::StartupSteps> = Box::new(startup::RealSteps);
             let runner: Box<dyn AclRunner> = Box::new(acl::IcaclsRunner::new());
@@ -140,18 +164,56 @@ fn run_inner() -> error::AppResult<()> {
         .map_err(|_| error::AppError::PluginInit("builder.build"))?
         .run(|app_handle, event| {
             // Auftrag §8: kontrollierter Shutdown.
+            //
+            // G4: Der Shutdown darf den Event-Loop NICHT blockieren.
+            //
+            // Vorher lief der komplette Shutdown (API-Call + Child-Wait bis
+            // 10 s) synchron im CloseRequested-Handler. Das blockierte den
+            // Event-Loop — `app_handle.exit(0)` wurde dadurch nie wirksam
+            // und die installierte App beendete sich NIE (der Tauri-Prozess
+            // blieb im Hintergrund, der WebView2-Renderer war weg).
+            //
+            // Jetzt:
+            //   1) `prevent_close()` — das Fenster bleibt sichtbar, bis der
+            //      Shutdown abgeschlossen ist.
+            //   2) Der Shutdown laeuft in einem Hintergrund-Thread.
+            //   3) Der Thread beendet am Ende die App ueber `exit(0)`
+            //      (thread-safe, kein Event-Loop-Re-Entry noetig).
             if let RunEvent::WindowEvent {
                 label,
-                event: WindowEvent::CloseRequested { .. },
+                event: WindowEvent::CloseRequested { api, .. },
                 ..
             } = &event
             {
                 if label == "main" {
-                    // Synchroner Shutdown-Pfad: API-Call + Child-Wait + Fail-safe.
-                    // Wir blockieren den CloseRequested-Handler bewusst, damit
-                    // der Node-Child sauber herunterfahren kann, bevor Tauri
-                    // das Fenster tatsächlich schließt.
-                    perform_controlled_shutdown(app_handle);
+                    // Fenster nicht sofort schliessen — der Shutdown
+                    // entscheidet selbst, wann die App endet.
+                    api.prevent_close();
+
+                    // Idempotenz-Guard: mehrfaches Schliessen fuehrt nicht
+                    // zu mehreren Shutdown-Laeufen.
+                    let already = {
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            if let Ok(mut g) = state.shutdown_requested.lock() {
+                                if *g {
+                                    true
+                                } else {
+                                    *g = true;
+                                    false
+                                }
+                            } else {
+                                true
+                            }
+                        } else {
+                            true
+                        }
+                    };
+                    if !already {
+                        let handle = app_handle.clone();
+                        std::thread::spawn(move || {
+                            perform_controlled_shutdown(&handle);
+                        });
+                    }
                 }
             }
             // Standardmäßig Exit zulassen. ExitRequested wird NICHT
@@ -159,6 +221,109 @@ fn run_inner() -> error::AppResult<()> {
             // beenden kann.
         });
 
+    Ok(())
+}
+
+/// G4: Entfernt den Win32-Extended-Path-Prefix (`\\?\`) aus einem Pfad.
+///
+/// Hintergrund: Tauri v2 liefert `resource_dir()` auf Windows als
+/// `\\?\C:\pfad\...`. Node.js kann solche Pfade nicht als Argument oder
+/// cwd verwenden (der Node-Parser schneidet sie auf `C:` ab) — der
+/// Runtime-Start schlaegt dann mit
+/// `EISDIR: illegal operation on a directory, lstat 'C:'` fehl.
+///
+/// Wir normalisieren auf die klassische Form `C:\pfad\...`.
+/// UNC-Pfade (`\\?\UNC\server\share`) werden zu `\\server\share`.
+///
+/// Der Pfad wird zusaetzlich auf ein absolutes, normalisiertes Form gebracht
+/// (kein trailing Separator), damit `PathBuf::join` korrekt arbeitet.
+fn normalize_windows_extended_path(p: &std::path::Path) -> std::path::PathBuf {
+    let raw = p.to_string_lossy().to_string();
+
+    // Extended-length prefix entfernen.
+    let stripped = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        // UNC: \\?\UNC\server\share -> \\server\share
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.clone()
+    };
+
+    let mut out = std::path::PathBuf::from(stripped);
+    // Trailing Separator entfernen (ausser bei Root wie "C:\").
+    while out.as_os_str().len() > 3 {
+        let s = out.to_string_lossy().to_string();
+        if s.ends_with('\\') || s.ends_with('/') {
+            out.pop();
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// G3: Bestimmt den Runtime-Root und setzt ihn in die Environment.
+///
+/// Reihenfolge:
+///   1. `HAVEWA_RUNTIME_ROOT` — bereits gesetzt (z.B. von einem Test-Harness
+///      oder einem portable-Override). Wir respektieren den Wert.
+///   2. Tauri `resource_dir()` + `runtime/` — der Release-Fall.
+///
+/// Fail-closed: Wenn der Resource-Root nicht gefunden werden kann, geben
+/// wir einen Fehler zurück (der App startet dann nicht mit einem
+/// halb-korrekten Runtime-Pfad).
+fn resolve_runtime_root(handle: &tauri::AppHandle) -> error::AppResult<()> {
+    // Schritt 1: explizit gesetzter Override.
+    if let Ok(v) = std::env::var(paths::ENV_RUNTIME_ROOT) {
+        if !v.trim().is_empty() {
+            return Ok(());
+        }
+    }
+
+    // Schritt 2: Tauri-Resource-Root.
+    // `handle.path()` ist bereits der PathResolver (Tauri v2 API).
+    let resource_root = handle
+        .path()
+        .resolve("", tauri::path::BaseDirectory::Resource)
+        .map_err(|_| error::AppError::RuntimeSpawn {
+            stage: "resource_dir_unresolvable",
+            exit: None,
+        })?;
+
+    let runtime_root = resource_root.join(paths::RUNTIME_SUBDIR);
+
+    // G4: Win32-Extended-Path-Prefix entfernen.
+    //
+    //     Tauri v2 liefert `resource_dir()` auf Windows als
+    //     `\\?\C:\pfad\...` (Win32 "extended-length path"). Node.js kann
+    //     solche Pfade NICHT als Argument oder cwd verwenden — der
+    //     Node-Parser schneidet sie ab und übergibt nur `C:`:
+    //
+    //       Error: EISDIR: illegal operation on a directory, lstat 'C:'
+    //
+    //     Wir normalisieren den Pfad daher auf den klassischen
+    //     `C:\pfad\...`-Form, bevor er an Node geht.
+    let runtime_root = normalize_windows_extended_path(&runtime_root);
+
+    // Diagnose (nur Pfad-Form, keine Secrets): der Runtime-Root ist kein
+    // Geheimnis und muss im Fehlerfall nachvollziehbar sein.
+    eprintln!(
+        "[havewa-desktop] resource_root={:?} runtime_root={:?}",
+        resource_root, runtime_root
+    );
+
+    // Fail-closed: Die gebündelte Runtime MUSS existieren.
+    if !runtime_root.is_dir() {
+        return Err(error::AppError::RuntimeSpawn {
+            stage: "runtime_root_missing",
+            exit: None,
+        });
+    }
+
+    // Für Debugging/Diagnose ist der Pfad NICHT geheim — aber er landet
+    // nicht im Log (nur der Fehlerfall loggt).
+    std::env::set_var(paths::ENV_RUNTIME_ROOT, &runtime_root);
     Ok(())
 }
 
@@ -208,36 +373,19 @@ fn show_existing_main(
 /// Kontrollierter Shutdown (Auftrag §8).
 ///
 /// Sequenz:
-///   1) Idempotenz-Guard: nur einmal ausführen.
-///   2) SHUTDOWN_TOKEN + Loopback aus AppState holen.
-///   3) POST /api/shutdown mit Token senden (202 = Erfolg).
-///   4) Auf Child-Exit warten (mit Timeout).
-///   5) Falls Child nicht beendet: TerminateProcess NUR auf das
+///   1) SHUTDOWN_TOKEN + Loopback aus AppState holen.
+///   2) POST /api/shutdown mit Token senden (202 = Erfolg).
+///   3) Auf Child-Exit warten (mit Timeout).
+///   4) Falls Child nicht beendet: TerminateProcess NUR auf das
 ///      EIGENE Child-Handle (Fail-safe).
-///   6) Keine fremden Prozesse anfassen, kein kill-by-name.
+///   5) Keine fremden Prozesse anfassen, kein kill-by-name.
+///   6) App beenden (`exit(0)`).
+///
+/// G4: Diese Funktion laeuft in einem Hintergrund-Thread (der
+/// CloseRequested-Handler blockiert den Event-Loop nicht mehr). Der
+/// Idempotenz-Guard sitzt im Handler (siehe `.run(...)`).
 fn perform_controlled_shutdown(app_handle: &tauri::AppHandle) {
-    // Schritt 1: Idempotenz.
-    let already = {
-        if let Some(state) = app_handle.try_state::<AppState>() {
-            if let Ok(mut g) = state.shutdown_requested.lock() {
-                if *g {
-                    true
-                } else {
-                    *g = true;
-                    false
-                }
-            } else {
-                true // lock failed: assume already requested, fail-safe
-            }
-        } else {
-            true
-        }
-    };
-    if already {
-        return;
-    }
-
-    // Schritt 2: State lesen.
+    // Schritt 1: State lesen.
     let (token, host, port) = {
         let state = match app_handle.try_state::<AppState>() {
             Some(s) => s,
@@ -277,4 +425,16 @@ fn perform_controlled_shutdown(app_handle: &tauri::AppHandle) {
             }
         }
     }
+
+    // Schritt 6: Die App jetzt selbst beenden.
+    //
+    // G4: Ohne diesen Exit bleibt der Tauri-Prozess nach dem
+    // Fenster-Close im Hintergrund laufen (der WebView2-Renderer wird
+    // beendet, der Hauptprozess aber nicht). Das ist ein Produktfehler:
+    // die installierte App beendet sich nie.
+    //
+    // `app_handle.exit(0)` beendet die App sauber, nachdem der Runtime-Stack
+    // (Node + PostgreSQL) bereits kontrolliert heruntergefahren wurde.
+    eprintln!("[havewa-desktop] runtime stopped - exiting app");
+    app_handle.exit(0);
 }

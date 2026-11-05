@@ -119,17 +119,22 @@ async function main() {
   const timeoutMs = args.timeoutMs
     || (process.env.HAVEWA_RUNTIME_TIMEOUT_MS ? parseInt(process.env.HAVEWA_RUNTIME_TIMEOUT_MS, 10) : 300_000);
 
-  try {
-    process.stdout.write("[migrate-deploy] prisma generate (lokal im Tree) …\n");
-    await runPrismaCli(treeDir, ["generate", "--schema", schemaPath], {
-      env: { DATABASE_URL: dbUrl },
-      inheritStdout: true,
-      inheritStderr: true,
-      timeoutMs,
-    });
-  } catch (e) {
-    process.stderr.write(`[migrate-deploy] prisma generate fehlgeschlagen: ${e?.message || e}\n`);
-    process.exit(1);
+  // HAVEWA-07D G2: Skip-Schalter (siehe shouldSkipPrismaGenerate oben).
+  if (shouldSkipPrismaGenerate()) {
+    process.stdout.write("[migrate-deploy] prisma generate SKIPPED (HAVEWA_DESKTOP_RUNTIME/HAVEWA_PRISMA_SKIP_GENERATE gesetzt)\n");
+  } else {
+    try {
+      process.stdout.write("[migrate-deploy] prisma generate (lokal im Tree) …\n");
+      await runPrismaCli(treeDir, ["generate", "--schema", schemaPath], {
+        env: { DATABASE_URL: dbUrl },
+        inheritStdout: true,
+        inheritStderr: true,
+        timeoutMs,
+      });
+    } catch (e) {
+      process.stderr.write(`[migrate-deploy] prisma generate fehlgeschlagen: ${e?.message || e}\n`);
+      process.exit(1);
+    }
   }
 
   try {
@@ -152,6 +157,26 @@ async function main() {
  * Testbare Variante: uebergeb dbUrl, treeDir, schemaPath explizit.
  * Liefert { generate, deploy } Ergebnisse. Wirft bei Fehler.
  */
+/**
+ * HAVEWA-07D G2 — Skip-Switch fuer `prisma generate`.
+ *
+ * In einem Desktop-Installer-Stage ist der Prisma-Client build-time bereits
+ * erzeugt (Next-Standalone liefert ihn mit). `prisma generate` wuerde im
+ * installierten Pfad unnoetig Netz (Schema-Loader) und Speicher verbrauchen.
+ *
+ * Aktivierung (einer der Schalter genuegt):
+ *   HAVEWA_PRISMA_SKIP_GENERATE=1
+ *   HAVEWA_DESKTOP_RUNTIME=1
+ *
+ * Dev-/Docker-/Standalone-Pfade: kein Effekt (Schalter nicht gesetzt).
+ */
+export function shouldSkipPrismaGenerate() {
+  return (
+    process.env.HAVEWA_PRISMA_SKIP_GENERATE === "1"
+    || process.env.HAVEWA_DESKTOP_RUNTIME === "1"
+  );
+}
+
 export async function runMigrateDeploy({
   dbUrl,
   treeDir,
@@ -171,13 +196,18 @@ export async function runMigrateDeploy({
   // Gemeinsame Quelle: dbTargetLabel() (Review-Fix M1, 07A-2).
   safeLog.log(`[migrate-deploy] db:    ${dbTargetLabel(dbUrl)}\n`);
 
-  safeLog.log("[migrate-deploy] prisma generate (lokal im Tree) …\n");
-  await runner(treeDir, ["generate", "--schema", schemaPath], {
-    env: { DATABASE_URL: dbUrl },
-    inheritStdout: false,
-    inheritStderr: false,
-    timeoutMs,
-  });
+  const skipGenerate = shouldSkipPrismaGenerate();
+  if (skipGenerate) {
+    safeLog.log("[migrate-deploy] prisma generate SKIPPED (HAVEWA_DESKTOP_RUNTIME/HAVEWA_PRISMA_SKIP_GENERATE gesetzt)\n");
+  } else {
+    safeLog.log("[migrate-deploy] prisma generate (lokal im Tree) …\n");
+    await runner(treeDir, ["generate", "--schema", schemaPath], {
+      env: { DATABASE_URL: dbUrl },
+      inheritStdout: false,
+      inheritStderr: false,
+      timeoutMs,
+    });
+  }
 
   safeLog.log("[migrate-deploy] prisma migrate deploy (offline) …\n");
   await runner(treeDir, ["migrate", "deploy", "--schema", schemaPath], {

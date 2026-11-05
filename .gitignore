@@ -53,3 +53,17 @@ next-env.d.ts
 scripts/dist/
 scripts/.runtime/
 runtime-state/
+
+# HAVEWA-07D G1: Runtime Asset Acquisition.
+# .runtime-cache/  = lokaler Build-Cache (downloads + extracted) fuer gebundelte Runtimes
+# src-tauri/resources/runtime/ = von spaeteren 07D-Phasen abgelegte Runtime-Trees (Bundle-Ziel)
+# release/ = spaetere Installer-Outputs (NSIS / WebView2 offline)
+.runtime-cache/
+!/.runtime-cache/.gitkeep
+/src-tauri/resources/runtime/
+/release/
+
+# HAVEWA-07D G3: Tauri-Bundle-Artefakte.
+# src-tauri/gen/schemas/ = von tauri-build generierte Capability-Schemata
+# (bereits in 07C via eslint.config.mjs ignoriert, hier explizit dokumentiert)
+/src-tauri/gen/schemas/

@@ -27,7 +27,7 @@
 //   - 5432 nicht hart kodiert; DB-URL kommt aus ENV
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -41,9 +41,44 @@ import { HOST, PORTS } from "./start-with-fallback.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(SCRIPT_DIR, "..");
-const STANDALONE_DIR = path.join(ROOT, ".next", "standalone");
-const BOOTSTRAP_JS = path.join(ROOT, "scripts", "dist", "bootstrap.js");
-const MIGRATE_RUNNER = path.join(ROOT, "scripts", "migrate-deploy.mjs");
+
+/**
+ * HAVEWA-07D G2 — Stage-Aware Standalone-Lookup.
+ *
+ * Im Dev-/Repo-Pfad erwarten wir `.next/standalone/server.js`.
+ * Im Desktop-Stage ist der Next-Standalone-Baum direkt in `runtime/app/`
+ * flach kopiert — d.h. `server.js` liegt im Stage-Root. Wir erkennen das an
+ * einer Stage-Marker-Datei (`runtime/app/package.json` MIT `name ==
+ * "havewa-desktop-stage"`).
+ *
+ * Wenn der Marker vorhanden ist:
+ *   - STANDALONE_DIR = ROOT (= app/ Stage-Root)
+ *   - SERVER_JS = ROOT/server.js (kein `.next/standalone/`-Prefix)
+ * Sonst:
+ *   - STANDALONE_DIR = ROOT/.next/standalone
+ *   - SERVER_JS = ROOT/.next/standalone/server.js
+ *
+ * Das beruehrt keine Dev-Pfade; nur wenn der Stage-Marker existiert,
+ * schaltet das Script auf Stage-Layout.
+ */
+function isStage() {
+  try {
+    const pkgRaw = readFileSync(path.join(ROOT, "package.json"), "utf8");
+    const pkg = JSON.parse(pkgRaw);
+    return pkg?.name === "havewa-desktop-stage";
+  } catch {
+    return false;
+  }
+}
+
+const STAGE = isStage();
+const STANDALONE_DIR = STAGE ? ROOT : path.join(ROOT, ".next", "standalone");
+const BOOTSTRAP_JS = STAGE
+  ? path.join(ROOT, "scripts", "dist", "bootstrap.js")
+  : path.join(ROOT, "scripts", "dist", "bootstrap.js");
+const MIGRATE_RUNNER = STAGE
+  ? path.join(ROOT, "scripts", "migrate-deploy.mjs")
+  : path.join(ROOT, "scripts", "migrate-deploy.mjs");
 
 const READY_TIMEOUT_MS = 60_000;
 const DB_PROBE_TIMEOUT_MS = 5_000;
@@ -55,6 +90,9 @@ function fail(msg, code = 1) {
 
 function info(msg) {
   process.stdout.write(`[start-runtime] ${msg}\n`);
+}
+function warn(msg) {
+  process.stderr.write(`[start-runtime] WARN ${msg}\n`);
 }
 
 function dataDirLocal() {
@@ -166,8 +204,26 @@ async function main() {
   info(`HAVEWA_DATA_DIR: ${process.env.HAVEWA_DATA_DIR?.trim() || "(unset, fallback process.cwd)"}`);
   info(`dataDir: ${dataDirLocal()}`);
 
-  // 2) Port bestimmen
-  const port = await pickPort();
+  // 2) Port bestimmen.
+  //    Repo-Pfad: Auto-Pick (3000..3005).
+  //    Stage-Pfad mit HAVEWA_DESKTOP_RUNTIME=1: explizit aus process.env.PORT
+  //    (z. B. vom Installer gesetzt); fallback auf Auto-Pick.
+  let port;
+  if (process.env.HAVEWA_DESKTOP_RUNTIME === "1" && process.env.PORT) {
+    port = parseInt(process.env.PORT, 10);
+    if (!Number.isFinite(port) || port <= 0) {
+      fail(`PORT ungueltig: ${process.env.PORT}`);
+    }
+    // Sicherstellen, dass der Port loopback-bind-frei ist. Wenn nicht,
+    // fallback auf Auto-Pick.
+    const free = await probePort(port);
+    if (!free) {
+      warn(`Port ${port} belegt — fallback auf Auto-Pick`);
+      port = await pickPort();
+    }
+  } else {
+    port = await pickPort();
+  }
   info(`chosen port: ${HOST}:${port}`);
   await writeRuntimeState(port);
 
@@ -204,6 +260,12 @@ async function main() {
 
   // 6) Next standalone starten
   info(`starte standalone server.js mit PORT=${port} HOSTNAME=${HOST}`);
+  // HAVEWA-07D G2 Hardening: KEIN `--require`-Monkeypatch mehr.
+  // Next/Turbopack-Aliase (`@prisma/client-<16hex>`) werden beim Staging
+  // statisch als echte Verzeichnisse unter <app-stage>/node_modules/
+  // materialisiert (siehe scripts/package-desktop-runtime.mjs ->
+  // materializeTurbopackAliases). Dadurch laesst sich der Server ohne
+  // globalen Module._resolveFilename-Patch starten.
   const child = spawn(process.execPath, [path.join(STANDALONE_DIR, "server.js")], {
     stdio: "inherit",
     shell: false,

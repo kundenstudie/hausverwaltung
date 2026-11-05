@@ -33,7 +33,34 @@ const nextConfig: NextConfig = {
   // Standalone-Build nur per ENV aktivieren (HAVEWA-07A-1). Default-Verhalten
   // ohne ENV ist unveraendert (kein output-Key).
   ...(process.env.NEXT_OUTPUT_STANDALONE === "1"
-    ? { output: "standalone" as const }
+    ? {
+        output: "standalone" as const,
+        // HAVEWA-07D G4: File-Tracing vom Repo-Root ausschliessen.
+        //
+        // OHNE diese Excludes zieht Next das komplette `src-tauri/`
+        // (inkl. ~8 GB `src-tauri/target/debug/`) in `.next/standalone/`,
+        // weil die Rust-Quellen Repo-Dateien referenzieren. Der Desktop-Stage
+        // braucht davon nichts — die Runtime wird separat als Tauri-Resource
+        // gebuendelt (siehe src-tauri/tauri.conf.json).
+        //
+        // Betroffen sind ausschliesslich Repo-Entwicklungsartefakte; der
+        // Anwendungs-Code (src/, app/, messages/, public/) bleibt unberuehrt.
+        outputFileTracingExcludes: {
+          "/*": [
+            "./src-tauri/**/*",
+            "./playwright-report/**/*",
+            "./test-results/**/*",
+            "./release/**/*",
+            "./.runtime-cache/**/*",
+            "./docs/**/*",
+            "./e2e/**/*",
+            "./storage/**/*",
+            "./pgdata/**/*",
+            "./runtime-state/**/*",
+            "./.next/cache/**/*",
+          ],
+        },
+      }
     : {}),
 };
 

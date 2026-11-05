@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::acl::{self, AclRunner};
+use crate::env;
 use crate::error::{AppError, AppResult};
 use crate::paths;
 use crate::port_state::{self, PortState};
@@ -51,18 +52,34 @@ pub enum StartupState {
 #[derive(Debug, Clone)]
 pub struct StartupConfig {
     pub data_dir: PathBuf,
+    /// Runtime-Root (Basis der gebündelten Runtime).
+    pub runtime_root: PathBuf,
+    /// Verzeichnis des gebündelten Node-Binaries.
+    pub node_dir: PathBuf,
+    /// Pfad zum gebündelten Node-Binary.
     pub node_bin: PathBuf,
-    pub repo_root: PathBuf,
+    /// Verzeichnis des gebündelten PostgreSQL-bin.
+    pub postgres_bin_dir: PathBuf,
+    /// Verzeichnis des gebündelten App-Stages (enthält das Start-Skript).
+    pub app_dir: PathBuf,
     pub ready_timeout: Duration,
     pub port_wait_timeout: Duration,
 }
 
 impl StartupConfig {
     pub fn from_env_or_default() -> AppResult<Self> {
+        let runtime_root = runtime::runtime_root()?;
+        let node_dir = paths::node_dir(&runtime_root);
+        let node_bin = paths::node_bin_path();
+        let postgres_bin_dir = paths::postgres_bin_dir(&runtime_root);
+        let app_dir = paths::app_dir(&runtime_root);
         Ok(Self {
             data_dir: paths::resolve_data_dir()?,
-            node_bin: paths::node_bin_path(),
-            repo_root: runtime::repo_root()?,
+            runtime_root,
+            node_dir,
+            node_bin,
+            postgres_bin_dir,
+            app_dir,
             ready_timeout: Duration::from_secs(45),
             port_wait_timeout: Duration::from_secs(30),
         })
@@ -131,7 +148,7 @@ impl StartupSteps for RealSteps {
         cfg: &StartupConfig,
         env_overrides: &[(&str, &str)],
     ) -> AppResult<ChildHandle> {
-        let child = runtime::spawn_runtime(&cfg.node_bin, &cfg.repo_root, env_overrides)?;
+        let child = runtime::spawn_runtime(&cfg.node_bin, &cfg.app_dir, env_overrides)?;
         Ok(ChildHandle::new(child))
     }
 
@@ -180,27 +197,43 @@ impl Orchestrator {
     /// Setzt die Env-Overrides für den Spawn (Code-to-Code-Contract, Review §12).
     /// KEIN Logging der Werte. Wir reichen via env direkt durch.
     ///
-    /// - HAVEWA_DATA_DIR: Pflicht, vom Caller vorgegeben
+    /// G3-Contract (Auftrag §11):
+    /// - HAVEWA_DATA_DIR: Pflicht, vom Caller vorgegeben (Data Root)
     /// - PG_DBPASSWORD:   DB-User-Passwort (07B liest)
     /// - AUTH_SECRET:     App-Session-Secret (Next/Crypto liest)
+    /// - AUTH_TRUST_HOST: "true" (Auth.js verlangt Trust fuer Loopback-Hosts)
     /// - SHUTDOWN_TOKEN:  Token für /api/shutdown (Route liest)
-    /// - POSTGRES_RUNTIME_DIR: nur wenn gesetzt (sonst 07B-Default)
+    /// - POSTGRES_RUNTIME_DIR: gebündeltes PG (runtime/postgres/bin)
+    /// - HAVEWA_DESKTOP_RUNTIME: "1" (Desktop-Modus)
+    /// - HAVEWA_PRISMA_SKIP_GENERATE: "1" (kein runtime prisma generate)
+    /// - PATH: kontrolliert (Stage-Node + Stage-PG + System32)
+    ///
+    /// `POSTGRES_RUNTIME_DIR` wird NICHT mehr aus dem Eltern-Env
+    /// durchgereicht — im Desktop-Betrieb MUSS es das gebündelte PG sein.
     pub fn env_overrides(&self, secrets: &Secrets) -> Vec<(&'static str, String)> {
-        let mut v: Vec<(&'static str, String)> = Vec::with_capacity(5);
+        let mut v: Vec<(&'static str, String)> = Vec::with_capacity(9);
         v.push((
             "HAVEWA_DATA_DIR",
             self.cfg.data_dir.display().to_string(),
         ));
         v.push(("PG_DBPASSWORD", secrets.db_password.clone()));
         v.push(("AUTH_SECRET", secrets.auth_secret.clone()));
+        v.push(("AUTH_TRUST_HOST", "true".to_string()));
         v.push(("SHUTDOWN_TOKEN", secrets.shutdown_token.clone()));
-        // POSTGRES_RUNTIME_DIR: nur durchreichen, wenn explizit gesetzt.
-        if let Ok(runtime_dir) = std::env::var("POSTGRES_RUNTIME_DIR") {
-            let trimmed = runtime_dir.trim().to_string();
-            if !trimmed.is_empty() {
-                v.push(("POSTGRES_RUNTIME_DIR", trimmed));
-            }
-        }
+        // Gebündeltes PostgreSQL — NIEMALS ein System-PostgreSQL.
+        v.push((
+            "POSTGRES_RUNTIME_DIR",
+            self.cfg.postgres_bin_dir.display().to_string(),
+        ));
+        // Desktop-Modus: kein runtime prisma generate, Desktop-Verträge aktiv.
+        v.push(("HAVEWA_DESKTOP_RUNTIME", "1".to_string()));
+        v.push(("HAVEWA_PRISMA_SKIP_GENERATE", "1".to_string()));
+        // Kontrollierter PATH (kein System-Node, kein npm/npx/tsx, kein
+        // System-PostgreSQL).
+        v.push((
+            "PATH",
+            env::build_controlled_path(&self.cfg.node_dir, &self.cfg.postgres_bin_dir),
+        ));
         v
     }
 
@@ -364,8 +397,11 @@ mod tests {
     fn dummy_cfg() -> StartupConfig {
         StartupConfig {
             data_dir: PathBuf::from("X:\\dummy"),
-            node_bin: PathBuf::from("X:\\dummy\\node.exe"),
-            repo_root: PathBuf::from("X:\\dummy"),
+            runtime_root: PathBuf::from("X:\\dummy\\runtime"),
+            node_dir: PathBuf::from("X:\\dummy\\runtime\\node"),
+            node_bin: PathBuf::from("X:\\dummy\\runtime\\node\\node.exe"),
+            postgres_bin_dir: PathBuf::from("X:\\dummy\\runtime\\postgres\\bin"),
+            app_dir: PathBuf::from("X:\\dummy\\runtime\\app"),
             ready_timeout: Duration::from_secs(1),
             port_wait_timeout: Duration::from_secs(1),
         }
@@ -373,8 +409,6 @@ mod tests {
 
     #[test]
     fn env_overrides_contain_required_keys() {
-        // Wir setzen POSTGRES_RUNTIME_DIR NICHT → darf nicht in v sein.
-        std::env::remove_var("POSTGRES_RUNTIME_DIR");
         let cfg = dummy_cfg();
         let orch = Orchestrator::new(cfg);
         let s = Secrets::generate();
@@ -383,26 +417,99 @@ mod tests {
         assert!(names.contains(&"HAVEWA_DATA_DIR"));
         assert!(names.contains(&"PG_DBPASSWORD"));
         assert!(names.contains(&"AUTH_SECRET"));
+        assert!(names.contains(&"AUTH_TRUST_HOST"));
         assert!(names.contains(&"SHUTDOWN_TOKEN"));
+        assert!(names.contains(&"POSTGRES_RUNTIME_DIR"));
+        assert!(names.contains(&"HAVEWA_DESKTOP_RUNTIME"));
+        assert!(names.contains(&"HAVEWA_PRISMA_SKIP_GENERATE"));
+        assert!(names.contains(&"PATH"));
         // POSTGRES_PASSWORD: explizit NICHT mehr gesetzt.
         assert!(!names.contains(&"POSTGRES_PASSWORD"));
     }
 
     #[test]
-    fn env_overrides_skip_postgres_runtime_dir_when_unset() {
-        // Annahme: POSTGRES_RUNTIME_DIR ist in der Test-Umgebung nicht gesetzt.
-        // (Andere Tests dürfen sie setzen, aber wir verlassen uns hier auf den
-        // common-case. Der "passes-through"-Pfad ist im Code ein triviales
-        // `if let Ok(...)` und wird durch die 07B-Integration verifiziert.)
-        std::env::remove_var("POSTGRES_RUNTIME_DIR");
+    fn env_overrides_postgres_runtime_dir_is_bundled_not_system() {
         let cfg = dummy_cfg();
         let orch = Orchestrator::new(cfg);
         let s = Secrets::generate();
         let v = orch.env_overrides(&s);
-        let found = v
+        let pg = v
             .iter()
-            .find(|(k, _)| *k == "POSTGRES_RUNTIME_DIR");
-        assert!(found.is_none(), "POSTGRES_RUNTIME_DIR should be absent when env unset");
+            .find(|(k, _)| *k == "POSTGRES_RUNTIME_DIR")
+            .map(|(_, val)| val.clone())
+            .expect("POSTGRES_RUNTIME_DIR must be set");
+        assert!(pg.contains("runtime"), "must point into the bundled runtime: {pg}");
+        assert!(
+            !pg.contains("Program Files"),
+            "must not point at a system PostgreSQL: {pg}"
+        );
+    }
+
+    #[test]
+    fn env_overrides_path_is_controlled() {
+        let cfg = dummy_cfg();
+        let orch = Orchestrator::new(cfg);
+        let s = Secrets::generate();
+        let v = orch.env_overrides(&s);
+        let path = v
+            .iter()
+            .find(|(k, _)| *k == "PATH")
+            .map(|(_, val)| val.clone())
+            .expect("PATH must be set");
+        assert!(path.contains("runtime\\node") || path.contains("runtime/node"));
+        assert!(path.contains("postgres") || path.contains("postgres"));
+        // Kein System-Node, kein npm/npx, kein System-PostgreSQL.
+        assert!(!path.contains(".tools"));
+        assert!(!path.contains("Program Files"));
+    }
+
+    #[test]
+    fn env_overrides_auth_trust_host_is_true() {
+        let cfg = dummy_cfg();
+        let orch = Orchestrator::new(cfg);
+        let s = Secrets::generate();
+        let v = orch.env_overrides(&s);
+        let trust = v
+            .iter()
+            .find(|(k, _)| *k == "AUTH_TRUST_HOST")
+            .map(|(_, val)| val.clone())
+            .expect("AUTH_TRUST_HOST must be set");
+        assert_eq!(trust, "true");
+    }
+
+    #[test]
+    fn env_overrides_desktop_flags_are_one() {
+        let cfg = dummy_cfg();
+        let orch = Orchestrator::new(cfg);
+        let s = Secrets::generate();
+        let v = orch.env_overrides(&s);
+        for key in ["HAVEWA_DESKTOP_RUNTIME", "HAVEWA_PRISMA_SKIP_GENERATE"] {
+            let val = v
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, val)| val.clone())
+                .expect("missing key");
+            assert_eq!(val, "1", "{key} must be 1");
+        }
+    }
+
+    #[test]
+    fn env_overrides_never_inherit_postgres_runtime_dir_from_env() {
+        // Selbst wenn POSTGRES_RUNTIME_DIR in der Parent-Env auf ein
+        // System-PostgreSQL zeigt, MUSS der Desktop-Wert der gebündelte sein.
+        // SAFETY: nur in diesem Test gesetzt.
+        std::env::set_var("POSTGRES_RUNTIME_DIR", "C:\\Program Files\\PostgreSQL\\16\\bin");
+        let cfg = dummy_cfg();
+        let orch = Orchestrator::new(cfg);
+        let s = Secrets::generate();
+        let v = orch.env_overrides(&s);
+        let pg = v
+            .iter()
+            .find(|(k, _)| *k == "POSTGRES_RUNTIME_DIR")
+            .map(|(_, val)| val.clone())
+            .expect("POSTGRES_RUNTIME_DIR must be set");
+        assert!(!pg.contains("Program Files"));
+        std::env::remove_var("POSTGRES_RUNTIME_DIR");
     }
 
     #[test]

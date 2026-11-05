@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "0.1.0",
-  "productName": "HaVeWa",
+  "version": "0.6.0",
+  "productName": "HaVeWa Desktop",
   "identifier": "com.havewa.desktop",
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "frontendDist": "../.next/standalone",
+    "frontendDist": "../.next/frontend",
     "devUrl": "http://127.0.0.1:3000"
   },
   "app": {
@@ -38,12 +38,28 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "resources/runtime/": "runtime/"
+    },
     "icon": [
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "HaVeWa Desktop Shell (07C)",
-    "longDescription": "Tauri v2 minimal shell for the existing HaVeWa Node/PostgreSQL runtime (07A-2 / 07B). Bundling/Installer deferred to 07D."
+    "shortDescription": "HaVeWa Desktop (07D)",
+    "longDescription": "HaVeWa Desktop — Windows-x64 Desktop-Shell mit gebündelter Node- und PostgreSQL-Runtime.",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["German"],
+        "displayLanguageSelector": false,
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
   }
 }
