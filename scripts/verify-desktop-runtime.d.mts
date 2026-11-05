@@ -23,7 +23,7 @@ export interface VerifyResults {
   readonly app: { readonly errors: readonly string[] };
   readonly forbidden: readonly ForbiddenHit[];
   readonly devPaths: readonly DevPathHit[];
-  readonly prismaEngines: { readonly errors: readonly string[] };
+  readonly prismaEngines: PrismaEngineVerifyResult;
   readonly turbopackAliases: AliasVerifyResult;
   readonly fakeProductionPath: { readonly errors: readonly string[] };
 }
@@ -48,5 +48,40 @@ export declare function verifyTurbopackAliases(
 export declare function verifyNoFakeProductionPath(
   stageRoot: string,
 ): Promise<{ readonly errors: readonly string[] }>;
+
+/**
+ * G7-FIX: Ergebnis der Prisma-Engine-Pruefung.
+ * `engines` enthaelt das vollstaendige Inventar, `violations` nur die
+ * NICHT windows-x64 Engines (= FAIL).
+ */
+export interface PrismaEngineVerifyResult {
+  readonly errors: readonly string[];
+  readonly engines: readonly {
+    readonly file: string;
+    readonly name: string;
+    readonly family: string | null;
+    readonly target: {
+      readonly os: string;
+      readonly arch: string;
+      readonly family: string;
+      readonly matched: boolean;
+    };
+    readonly allowed: boolean;
+    readonly reason: string | null;
+    readonly format: "elf" | "pe" | "macho" | "wasm" | null;
+    readonly magicKnown: boolean;
+    readonly size: number | null;
+    readonly verdict: "allowed" | "forbidden" | "unverified";
+  }[];
+  readonly violations: readonly {
+    readonly file: string;
+    readonly name: string;
+    readonly verdict: "allowed" | "forbidden" | "unverified";
+  }[];
+}
+
+export declare function verifyPrismaEngines(
+  stageRoot: string,
+): Promise<PrismaEngineVerifyResult>;
 
 export declare function cli(argv: readonly string[]): Promise<number>;

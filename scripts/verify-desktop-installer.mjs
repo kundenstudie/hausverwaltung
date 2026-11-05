@@ -15,7 +15,15 @@ import { existsSync, statSync, readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  PRISMA_FORBIDDEN_NAME_PATTERNS,
+} from "./prisma-engine-policy.mjs";
+import {
+  scanPrismaEngines,
+  formatEngineInventory,
+} from "./prisma-engine-scan.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -46,7 +54,31 @@ function listFiles(root, maxDepth = 12, depth = 0, out = []) {
   return out;
 }
 
-function main() {
+/**
+ * G7-FIX: Prueft einen Payload-Baum (Stage bzw. installierter Payload)
+ * auf native Prisma-Engines und bewertet Windows-x64-only.
+ *
+ * @param {string} root Wurzelverzeichnis des Payloads (z.B. `<stage>/app`)
+ * @returns {Promise<{total:number, linux:number, arm64:number,
+ *                    windowsOnly:boolean, engines:Array, violations:Array}>}
+ */
+export async function verifyPayloadPrismaEngines(root) {
+  if (!root || !existsSync(root)) {
+    return {
+      total: 0, linux: 0, arm64: 0, windowsOnly: false,
+      engines: [], violations: [],
+    };
+  }
+  const { engines, violations } = await scanPrismaEngines(root);
+  const linux = engines.filter((e) => e.target.os === "linux").length;
+  const arm64 = engines.filter((e) => e.target.arch === "arm64"
+    || e.target.arch === "aarch64").length;
+  const windowsOnly = violations.length === 0 && engines.length > 0
+    && engines.every((e) => e.target.os === "windows" && e.target.arch === "x64");
+  return { total: engines.length, linux, arm64, windowsOnly, engines, violations };
+}
+
+async function main() {
   const installer = process.env.G4_INSTALLER;
   if (!installer || !existsSync(installer)) {
     console.error(`[g4-artifact] FAIL: Installer nicht gefunden: ${installer ?? "(G4_INSTALLER nicht gesetzt)"}`);
@@ -98,13 +130,17 @@ function main() {
 
   // Die NSIS-Datei-Tabelle ist unkomprimiert lesbar (Dateinamen der
   // installierten Dateien stehen im Header-Block).
+  //
+  // G7-FIX: Die verbotenen Muster decken ALLE Prisma-Engine-FAMILIEN und
+  // ALLE Nicht-Windows-/Nicht-x64-Targets ab. Die Liste wird zentral aus
+  // scripts/prisma-engine-policy.mjs abgeleitet, damit Verifier und
+  // Packaging nicht auseinanderlaufen koennen.
   const forbiddenInTable = [
     "playwright-report",
     "test-results",
     "runtime-cache",
     ".env",
-    "libquery_engine-linux",
-    "libquery_engine-debian",
+    ...PRISMA_FORBIDDEN_NAME_PATTERNS,
   ];
   const foundForbidden = forbiddenInTable.filter((f) => has(f));
   check("5. keine verbotenen Artefakte in der NSIS-Datei-Tabelle",
@@ -168,6 +204,34 @@ function main() {
     !existsSync(path.join(frontendRoot, "src-tauri")),
     "");
 
+  // --- G7-FIX: Prisma-Engine-Inventar im Stage (= Installer-Payload) ---
+  //
+  // ROOT CAUSE (G7-Blocker): Der 0.6.0-Installer enthielt
+  // `schema-engine-linux-arm64-openssl-3.0.x` (ELF/aarch64, ~19 MB) im
+  // Prisma-CLI-Tree. Der bisherige Verifier kannte nur `libquery_engine-*`
+  // und `query_engine-*` und uebersah die `schema-engine-*`-Familie.
+  //
+  // Jetzt: Der GESAMTE Stage wird ueber die zentrale Policy geprueft.
+  // Jede native Prisma-Engine, die nicht windows-x64 ist, ist ein FAIL.
+  console.log("\n[g4-artifact] ==== PRISMA NATIVE ENGINE INVENTAR (Stage = Payload) ====");
+  const stageApp = path.join(stageRoot, "app");
+  const engineReport = await verifyPayloadPrismaEngines(stageApp);
+  console.log(`[g4-artifact] native Prisma engines gesamt: ${engineReport.total}`);
+  console.log(`[g4-artifact] linux: ${engineReport.linux} | arm64/aarch64: ${engineReport.arm64}`);
+  console.log(formatEngineInventory(engineReport.engines));
+  check("12. Prisma-Engines im Stage: keine non-windows-x64 Engine",
+    engineReport.violations.length === 0,
+    engineReport.violations.length === 0
+      ? "alle Engines sind windows-x64"
+      : engineReport.violations.map((v) => `${v.target.family}:${v.name}`).join(", "));
+  check("13. Prisma-Engines im Stage: Windows-only (alle windows/x64)",
+    engineReport.windowsOnly,
+    `total=${engineReport.total} linux=${engineReport.linux} arm64=${engineReport.arm64}`);
+  check("14. Prisma-CLI-Tree enthält keine Linux-/ARM64-Engine",
+    !engineReport.engines.some((e) => e.name.includes("linux")
+      || e.name.includes("arm64") || e.name.includes("aarch64")),
+    "");
+
   console.log("\n[g4-artifact] ==== SUMMARY ====");
   const failed = results.filter((x) => !x.ok);
   for (const x of results) console.log(`  ${x.ok ? "OK  " : "FAIL"} ${x.name}`);
@@ -175,4 +239,22 @@ function main() {
   process.exit(failed.length === 0 ? 0 : 1);
 }
 
-main();
+/**
+ * Entry-Point-Guard: Das Skript darf auch als Modul importiert werden
+ * (fuer die Regressionstests), ohne die CLI auszufuehren.
+ */
+function isEntryPoint() {
+  try {
+    if (!process.argv[1]) return false;
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  main().catch((e) => {
+    console.error(`[g4-artifact] FATAL: ${e?.stack ?? e}`);
+    process.exit(1);
+  });
+}

@@ -16,6 +16,13 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import {
+  classifyPrismaEngine,
+  isNativePrismaEngineFile,
+} from "./prisma-engine-policy.mjs";
+
+import { scanPrismaEngines } from "./prisma-engine-scan.mjs";
+
 export const ROOT = process.cwd();
 
 /** Benoetigte statische Top-Level-Eintraege (immer kopieren). */
@@ -40,6 +47,43 @@ export async function copyDir(src, dst) {
     if (e.isDirectory()) await copyDir(s, d);
     else if (e.isFile()) await fs.copyFile(s, d);
   }
+}
+
+/**
+ * G7-FIX: Kopierer mit zentraler Prisma-Engine-Policy (Windows-x64-only).
+ *
+ * ROOT CAUSE: `node_modules/@prisma/engines` liefert MULTI-Plattform-
+ * Engines aus, u.a. `schema-engine-linux-arm64-openssl-3.0.x` (ELF/aarch64).
+ * Ohne Filter landen diese im Prisma-CLI-Tree `scripts/.runtime/prisma-cli/`
+ * und von dort in den Desktop-Stage und den Installer.
+ *
+ * Der Filter greift beim Kopieren (fail-closed) und benutzt exakt die
+ * Policy, die auch der Verifier verwendet (scripts/prisma-engine-policy.mjs).
+ *
+ * @returns {Promise<string[]>} nicht kopierte Dateien (relativ zum Quellbaum)
+ */
+export async function copyDirPrismaWindowsX64(src, dst) {
+  const dropped = [];
+  await fs.mkdir(dst, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  for (const e of entries) {
+    const s = path.join(src, e.name);
+    const d = path.join(dst, e.name);
+    if (e.isDirectory()) {
+      const sub = await copyDirPrismaWindowsX64(s, d);
+      dropped.push(...sub);
+    } else if (e.isFile()) {
+      if (isNativePrismaEngineFile(e.name)) {
+        const cls = classifyPrismaEngine(e.name);
+        if (!cls.allowed) {
+          dropped.push(path.relative(src, s).replace(/\\/g, "/"));
+          continue;
+        }
+      }
+      await fs.copyFile(s, d);
+    }
+  }
+  return dropped;
 }
 
 async function readJson(p) {
@@ -87,6 +131,7 @@ export async function buildPrismaTree(targetDir) {
   await fs.mkdir(targetDir, { recursive: true });
 
   const copied = [];
+  const droppedEngines = [];
 
   // 1) Statische Eintraege
   for (const [rel, dst] of STATIC_ENTRIES) {
@@ -97,7 +142,9 @@ export async function buildPrismaTree(targetDir) {
     const fullDst = path.join(targetDir, dst);
     await fs.mkdir(path.dirname(fullDst), { recursive: true });
     if ((await fs.stat(src)).isDirectory()) {
-      await copyDir(src, fullDst);
+      // G7-FIX: Policy-Filter beim Kopieren (fail-closed).
+      const dropped = await copyDirPrismaWindowsX64(src, fullDst);
+      for (const d of dropped) droppedEngines.push(`${rel}/${d}`);
     } else {
       await fs.copyFile(src, fullDst);
     }
@@ -117,10 +164,24 @@ export async function buildPrismaTree(targetDir) {
     const src = path.join(ROOT, "node_modules", dep);
     if (!(await exists(src))) continue;
     const dst = path.join(targetDir, "node_modules", dep);
-    await copyDir(src, dst);
+    const dropped = await copyDirPrismaWindowsX64(src, dst);
+    for (const d of dropped) droppedEngines.push(`node_modules/${dep}/${d}`);
     copied.push(`node_modules/${dep}`);
   }
 
+  // 3) Harte Kontrolle: Es darf KEINE native non-windows-x64 Engine im
+  //    gebauten Tree liegen. Fail-closed.
+  const { violations } = await scanPrismaEngines(targetDir);
+  if (violations.length > 0) {
+    const detail = violations
+      .map((v) => `${v.target.family}:${path.relative(targetDir, v.file).replace(/\\/g, "/")}`)
+      .join(", ");
+    throw new Error(
+      `Prisma-CLI-Tree enthaelt ${violations.length} non-windows-x64 Engine(s): ${detail}`,
+    );
+  }
+
+  buildPrismaTree.lastDroppedEngines = droppedEngines;
   return copied;
 }
 

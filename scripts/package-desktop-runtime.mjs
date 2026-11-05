@@ -41,6 +41,11 @@ import {
   verifyArchiveHash,
 } from "./runtime-assets.mjs";
 
+import {
+  classifyPrismaEngine,
+  isNativePrismaEngineFile,
+} from "./prisma-engine-policy.mjs";
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const LOCKFILE_PATH = path.join(REPO_ROOT, "scripts", "runtime-assets.lock.json");
@@ -157,6 +162,50 @@ async function copyDirFiltered(src, dst, predicate, depth = 0) {
 
 async function copyDirAll(src, dst) {
   return copyDirFiltered(src, dst, () => true);
+}
+
+/**
+ * G7-FIX: Kopierer mit zentraler Prisma-Engine-Policy (Windows-x64-only).
+ *
+ * Der Filter greift BEIM KOPIEREN — eine verbotene native Engine wird
+ * nie in den Stage geschrieben (fail-closed, kein Workaround durch
+ * nachtraegliches Loeschen). Die Policy ist dieselbe wie im Verifier
+ * (scripts/prisma-engine-policy.mjs), damit Stage und Pruefung nicht
+ * auseinanderlaufen koennen.
+ *
+ * @returns {Promise<{dropped: string[]}>} Die nicht kopierten Dateien
+ *          (relativ zum Quellbaum), fuer den Build-Report.
+ */
+async function copyDirAllPrismaWindowsX64(src, dst) {
+  const dropped = [];
+
+  async function copyRecursive(s, d) {
+    await mkdir(d, { recursive: true });
+    const entries = await readdir(s, { withFileTypes: true });
+    for (const e of entries) {
+      const sp = path.join(s, e.name);
+      const dp = path.join(d, e.name);
+      if (e.isDirectory()) {
+        await copyRecursive(sp, dp);
+      } else if (e.isFile()) {
+        // Zentrale Policy: native Prisma-Engine, die nicht windows-x64
+        // ist => nicht kopieren.
+        if (isNativePrismaEngineFile(e.name)) {
+          const cls = classifyPrismaEngine(e.name);
+          if (!cls.allowed) {
+            dropped.push(path.relative(src, sp).replace(/\\/g, "/"));
+            continue;
+          }
+        }
+        await mkdir(path.dirname(dp), { recursive: true });
+        await copyFile(sp, dp);
+      }
+      // Symlinks werden uebersprungen (siehe copyDirFiltered).
+    }
+  }
+
+  await copyRecursive(src, dst);
+  return { dropped };
 }
 
 /**
@@ -565,6 +614,9 @@ const APP_REQUIRED_PATHS = [
   "scripts/start-with-fallback.mjs",
   "scripts/migrate-deploy.mjs",
   "scripts/prisma-runtime-tree.mjs",
+  // G7-FIX: Runtime-Dep der zentralen Prisma-Engine-Policy.
+  "scripts/prisma-engine-policy.mjs",
+  "scripts/prisma-engine-scan.mjs",
   "scripts/dist/bootstrap.js",
   "scripts/.runtime/prisma-cli/node_modules/prisma/build/index.js",
 ];
@@ -620,29 +672,71 @@ function standalonePredicate(name, depth = 0) {
 // (STAGE_SCRIPTS_FORBIDDEN Set bleibt fÃ¼r kÃ¼nftige Erweiterungen stehen.)
 
 /**
- * Im `.prisma/client/`-Tree von `.next/standalone/node_modules/` und im
- * `scripts/.runtime/prisma-cli/node_modules/.prisma/client/` enthaltene
- * **fremde Engines** (Linux/Debian/ARM64) entfernen â€” der Stage braucht
- * nur Windows-x64-Engines.
+ * G7-FIX: Zentraler, fail-closed Prisma-Engine-Filter (Windows-x64-only).
  *
- * Klassifikation: Funktionsumfang (Windows-Prisma) bleibt vollstÃ¤ndig;
- * nur Multi-Plattform-Build-Artefakte werden entfernt.
+ * ROOT CAUSE (G7-Blocker):
+ *   Die bisherige Funktion `prunePrismaClientEngines` erkannte NUR die
+ *   Namenspraefixe `libquery_engine-` und `query_engine-`. Die
+ *   Prisma-CLI liefert aber weitere native Engine-FAMILIEN aus, u.a.
+ *   `schema-engine-<target>` (Prisma 6.x). Dadurch blieb im 0.6.0-
+ *   Installer u.a. unentdeckt:
+ *     @prisma/engines/schema-engine-linux-arm64-openssl-3.0.x
+ *   (ELF/aarch64, ~19 MB).
+ *
+ * NEUE REGEL:
+ *   Es wird jede Datei geprueft, deren Name zu einer der bekannten
+ *   Prisma-Engine-FAMILIEN gehoert (query_engine, libquery_engine,
+ *   schema-engine, migration-engine, introspection-engine, prisma-fmt, ...).
+ *   Ist das Zieltarget NICHT eindeutig windows-x64, wird die Datei
+ *   ENTFERNT (fail-closed). WASM-/JS-Bindings sind keine nativen
+ *   Engines und bleiben unberuehrt.
+ *
+ * Diese Funktion ist der EINE Ort, an dem die Policy angewandt wird —
+ * sie wird fuer den Prisma-CLI-Tree, den Standalone-.prisma/client,
+ * @prisma/engines, @prisma/client und die Turbopack-Aliase aufgerufen.
  */
-async function prunePrismaClientEngines(prismaClientRoot) {
-  if (!existsSync(prismaClientRoot)) return;
-  const entries = await readdir(prismaClientRoot, { withFileTypes: true });
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    const name = e.name.toLowerCase();
-    if (!name.startsWith("libquery_engine-") && !name.startsWith("query_engine-")) continue;
-    // Beispiel-Namen:
-    //   libquery_engine-debian-openssl-3.0.x.so.node (L)
-    //   libquery_engine-linux-arm64-openssl-3.0.x.so.node (L)
-    //   query_engine-windows.dll.node (W â€” BEHALTEN)
-    const isWindows = name.includes("windows");
-    if (isWindows) continue;
-    await rm(path.join(prismaClientRoot, e.name), { force: true });
+export async function prunePrismaClientEngines(prismaClientRoot) {
+  if (!existsSync(prismaClientRoot)) return { removed: [], kept: [] };
+  const removed = [];
+  const kept = [];
+
+  // Rekursiv: Engines koennen auch in Unterverzeichnissen liegen
+  // (z.B. `prisma/build/`, `prisma/prisma-client/`, `dist/`).
+  async function pruneDir(dir) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await pruneDir(p);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      const name = e.name;
+      // Nur native Engine-Binaries sind Kandidaten. JS/WASM-Bindings
+      // (query_engine_bg.postgresql.js, *.wasm) sind KEINE nativen
+      // Target-Binaries und bleiben erhalten.
+      if (!isNativePrismaEngineFile(name)) continue;
+      const cls = classifyPrismaEngine(name);
+      if (cls.allowed) {
+        kept.push(name);
+        continue;
+      }
+      await rm(p, { force: true });
+      removed.push(name);
+    }
   }
+
+  await pruneDir(prismaClientRoot);
+
+  if (removed.length > 0) {
+    warn(`Prisma-Engines entfernt (non-windows-x64): ${removed.join(", ")}`);
+  }
+  return { removed, kept };
 }
 
 /**
@@ -917,6 +1011,11 @@ async function stageApp() {
     "start-with-fallback.mjs",
     "migrate-deploy.mjs",
     "prisma-runtime-tree.mjs",
+    // G7-FIX: `prisma-runtime-tree.mjs` importiert die zentrale
+    // Prisma-Engine-Policy. Ohne diese Datei im Stage bricht der
+    // `migrate deploy` zur Laufzeit mit ERR_MODULE_NOT_FOUND ab.
+    "prisma-engine-policy.mjs",
+    "prisma-engine-scan.mjs",
   ]) {
     await safeCopyFile(
       path.join(REPO_ROOT, "scripts", required),
@@ -973,7 +1072,19 @@ async function stageApp() {
   }
 
   // 6) Prisma-CLI-Tree
-  await copyDirAll(PRISMA_TREE_SRC, path.join(appScripts, ".runtime", "prisma-cli"));
+  //
+  // G7-FIX: Der Kopierer wendet die zentrale Windows-x64-Policy an.
+  // Native Engines, die NICHT windows-x64 sind (z.B.
+  // `schema-engine-linux-arm64-openssl-3.0.x`), werden bereits beim
+  // Kopieren ausgeschlossen und gelangen NIE in den Stage.
+  const prismaCopy = await copyDirAllPrismaWindowsX64(
+    PRISMA_TREE_SRC,
+    path.join(appScripts, ".runtime", "prisma-cli"),
+  );
+  if (prismaCopy.dropped.length > 0) {
+    info(`Prisma-CLI-Tree: ${prismaCopy.dropped.length} non-windows-x64 Engine(s) ausgeschlossen: `
+      + prismaCopy.dropped.join(", "));
+  }
 
   // 6.x) Neutralisierung des server.js â€” Build-Pfade aus server.js
   //      durch einen neutralen Stage-Marker ersetzen.

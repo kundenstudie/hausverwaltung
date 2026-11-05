@@ -26,6 +26,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  scanPrismaEngines,
+  formatEngineInventory,
+} from "./prisma-engine-scan.mjs";
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const DEFAULT_STAGE = path.join(REPO_ROOT, "src-tauri", "resources", "runtime");
@@ -52,6 +57,9 @@ const APP_REQUIRED = [
   "scripts/start-with-fallback.mjs",
   "scripts/migrate-deploy.mjs",
   "scripts/prisma-runtime-tree.mjs",
+  // G7-FIX: Runtime-Dep der zentralen Prisma-Engine-Policy.
+  "scripts/prisma-engine-policy.mjs",
+  "scripts/prisma-engine-scan.mjs",
   "scripts/dist/bootstrap.js",
   "scripts/.runtime/prisma-cli/node_modules/prisma/build/index.js",
 ];
@@ -314,28 +322,63 @@ async function verifyApp(stageRoot) {
 // Prisma Engines Windows-only Check
 // ---------------------------------------------------------------------------
 
-async function verifyPrismaEngines(stageRoot) {
+/**
+ * G7-FIX: Prisma-Engine-Pruefung ueber die ZENTRALE Policy.
+ *
+ * ROOT CAUSE (G7-Blocker):
+ *   Der bisherige Check listete nur 5 feste Namen auf:
+ *     libquery_engine-linux, libquery_engine-debian,
+ *     libquery_engine-linux-arm64, query-engine-linux,
+ *     query-engine-debian
+ *   Die Prisma-CLI-Familie `schema-engine-*` fehlte komplett. Dadurch
+ *   blieb `schema-engine-linux-arm64-openssl-3.0.x` (ELF/aarch64, ~19 MB)
+ *   im 0.6.0-Installer unentdeckt.
+ *
+ * NEUE REGEL:
+ *   Es wird der GESAMTE Stage nach nativen Prisma-Engines aller
+ *   Familien durchsucht (query_engine, libquery_engine, schema-engine,
+ *   schema_engine, migration-engine, introspection-engine, prisma-fmt).
+ *   Jede Engine, deren Zieltarget NICHT windows-x64 ist, ist ein FAIL.
+ *   Zusaetzlich wird der Dateiinhalt (ELF/PE/Mach-O-Magic) geprueft,
+ *   damit nicht nur ueber Dateinamen geraten wird.
+ */
+export async function verifyPrismaEngines(stageRoot) {
   const prismaCliDir = path.join(stageRoot, "app", "scripts", ".runtime", "prisma-cli");
   const errors = [];
   if (!existsSync(prismaCliDir)) {
     errors.push(`Prisma CLI Tree fehlt: ${prismaCliDir}`);
-    return { errors };
+    return { errors, engines: [], violations: [] };
   }
-  // Erwartet: nur native / windows Engines.
-  const forbiddenEngines = [
-    "libquery_engine-linux",
-    "libquery_engine-debian",
-    "libquery_engine-linux-arm64",
-    "query-engine-linux",
-    "query-engine-debian",
-  ];
-  for await (const p of walk(prismaCliDir)) {
-    const base = path.basename(p).toLowerCase();
-    for (const fe of forbiddenEngines) {
-      if (base.includes(fe)) errors.push(`Verbotene Prisma-Engine in Stage: ${p}`);
-    }
+
+  // Der GESAMTE App-Stage wird geprueft — die Engines koennen auch im
+  // Standalone-.prisma/client, in @prisma/client, in @prisma/engines
+  // oder in den Turbopack-Aliase liegen.
+  //
+  // Wichtig: Es wird genau EIN Wurzelverzeichnis gescannt. Der
+  // Prisma-CLI-Tree liegt INNERHALB von `app/` — ein zweiter Scan auf
+  // `prismaCliDir` wuerde dieselben Engines doppelt zaehlen.
+  const appStage = path.join(stageRoot, "app");
+  const { engines: allEngines, violations: allViolations } =
+    await scanPrismaEngines(appStage);
+
+  for (const v of allViolations) {
+    errors.push(
+      `Verbotene Prisma-Engine (${v.target.family}, ${v.format || "unbekanntes Format"}) `
+      + `im Stage: ${path.relative(stageRoot, v.file)}`,
+    );
   }
-  return { errors };
+
+  // Pflicht-Engine: Windows-x64 Query-Engine MUSS vorhanden sein.
+  const hasWindowsQueryEngine = allEngines.some(
+    (e) => e.allowed && /query_engine-windows/i.test(e.name),
+  );
+  if (!hasWindowsQueryEngine) {
+    errors.push(
+      "Windows-x64 Prisma-Query-Engine (query_engine-windows.dll.node) fehlt im Stage",
+    );
+  }
+
+  return { errors, engines: allEngines, violations: allViolations };
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +514,14 @@ function printResults(results, stageRoot) {
   info(`forbidden: ${results.forbidden.length === 0 ? "OK" : `FAIL (${results.forbidden.length})`}`);
   info(`dev-paths: ${results.devPaths.length === 0 ? "OK" : `FAIL (${results.devPaths.length})`}`);
   info(`prismaEngines: ${results.prismaEngines.errors.length === 0 ? "OK" : `FAIL (${results.prismaEngines.errors.length})`}`);
+  // G7-FIX: Inventar-Report der nativen Prisma-Engines (Beweis fuer den
+  // Payload). Zeigt jede Engine mit Zieltarget, Format und Groesse.
+  const engineList = results.prismaEngines.engines || [];
+  const linuxCount = engineList.filter((e) => e.target.os === "linux").length;
+  const armCount = engineList.filter((e) => e.target.arch === "arm64" || e.target.arch === "aarch64").length;
+  info(`prismaEngines total: ${engineList.length} | linux=${linuxCount} | arm64=${armCount}`);
+  info("prismaEngines inventory:");
+  process.stdout.write(`${formatEngineInventory(engineList)}\n`);
   info(`turbopackAliases: ${results.turbopackAliases.errors.length === 0 ? `OK (${results.turbopackAliases.aliases.join(", ")})` : `FAIL (${results.turbopackAliases.errors.length})`}`);
   info(`fakeProdPath: ${results.fakeProductionPath.errors.length === 0 ? "OK" : `FAIL (${results.fakeProductionPath.errors.length})`}`);
   for (const list of [

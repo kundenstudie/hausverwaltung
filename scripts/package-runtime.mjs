@@ -29,6 +29,13 @@ function fail(msg, code = 1) {
 async function main() {
   process.stdout.write(`[package-runtime] target: ${TARGET}\n`);
   const copied = await buildPrismaTree(TARGET);
+  const dropped = buildPrismaTree.lastDroppedEngines || [];
+  if (dropped.length > 0) {
+    process.stdout.write(
+      `[package-runtime] non-windows-x64 Prisma-Engines ausgeschlossen (${dropped.length}):\n`,
+    );
+    for (const d of dropped) process.stdout.write(`  - ${d}\n`);
+  }
   process.stdout.write(`[package-runtime] kopierte Top-Level-Eintraege: ${copied.length}\n`);
   for (const c of copied) process.stdout.write(`  - ${c}\n`);
   process.stdout.write(`[package-runtime] OK\n`);

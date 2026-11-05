@@ -29,6 +29,11 @@ import path from "node:path";
 import os from "node:os";
 import http from "node:http";
 
+import {
+  scanPrismaEngines,
+  formatEngineInventory,
+} from "./prisma-engine-scan.mjs";
+
 const LOCALAPPDATA = process.env.LOCALAPPDATA;
 const INSTALL_ROOT = path.join(LOCALAPPDATA, "HaVeWa Desktop");
 const DATA_ROOT = path.join(LOCALAPPDATA, "HaVeWa");
@@ -313,6 +318,35 @@ async function main() {
     installEntries.join(", "));
   check("8. kein .runtime-cache im Install Root",
     !existsSync(path.join(INSTALL_ROOT, ".runtime-cache")));
+
+  // --- G7-FIX: Prisma-Engine-Inventar im INSTALLIERTEN Payload ---
+  //
+  // Der installierte Payload ist der belastbarste Beweis: er wird
+  // rekursiv ueber die zentrale Policy geprueft. Jede native Prisma-
+  // Engine, die nicht windows-x64 ist, ist ein FAIL.
+  console.log("\n[g4] ==== PRISMA NATIVE ENGINE INVENTAR (installierter Payload) ====");
+  const installedApp = path.join(INSTALL_ROOT, "runtime", "app");
+  const { engines: installedEngines, violations: installedViolations } =
+    await scanPrismaEngines(installedApp);
+  const installedLinux = installedEngines.filter((e) => e.target.os === "linux").length;
+  const installedArm = installedEngines.filter((e) => e.target.arch === "arm64"
+    || e.target.arch === "aarch64").length;
+  console.log(`[g4] native Prisma engines gesamt: ${installedEngines.length}`);
+  console.log(`[g4] linux: ${installedLinux} | arm64/aarch64: ${installedArm}`);
+  console.log(formatEngineInventory(installedEngines));
+  check("8a. installierter Payload: keine non-windows-x64 Prisma-Engine",
+    installedViolations.length === 0,
+    installedViolations.length === 0
+      ? "alle Engines sind windows-x64"
+      : installedViolations.map((v) => `${v.target.family}:${v.name}`).join(", "));
+  check("8b. installierter Payload: Linux-Prisma-Engines = 0",
+    installedLinux === 0, `linux=${installedLinux}`);
+  check("8c. installierter Payload: ARM64-Prisma-Engines = 0",
+    installedArm === 0, `arm64=${installedArm}`);
+  check("8d. installierter Payload: Prisma-Engine Windows-only",
+    installedEngines.length > 0
+      && installedEngines.every((e) => e.target.os === "windows" && e.target.arch === "x64"),
+    `total=${installedEngines.length}`);
 
   // --- 2) First Start ---------------------------------------------------
   info("First Start der installierten EXE …");

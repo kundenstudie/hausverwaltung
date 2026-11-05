@@ -36,6 +36,20 @@ export declare function sanitizePrismaSourceMaps(
   dir: string,
 ): Promise<number>;
 
+/**
+ * G7-FIX: Zentraler fail-closed Prisma-Engine-Filter (Windows-x64-only).
+ * Entfernt jede native Prisma-Engine, deren Zieltarget NICHT windows-x64
+ * ist (z.B. `schema-engine-linux-arm64-openssl-3.0.x`).
+ */
+export interface PrismaPruneResult {
+  readonly removed: readonly string[];
+  readonly kept: readonly string[];
+}
+
+export declare function prunePrismaClientEngines(
+  prismaClientRoot: string,
+): Promise<PrismaPruneResult>;
+
 export interface PackageArgs {
   skipApp?: boolean;
   cacheRoot?: string;
